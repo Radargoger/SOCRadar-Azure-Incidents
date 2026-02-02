@@ -2,8 +2,7 @@
 
 Bidirectional integration between SOCRadar XTI Platform and Microsoft Sentinel.
 
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FRadargoger%2FSOCRadar-Azure-Incidents%2Fmaster%2Fazuredeploy.json)
-
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FRadargoger%2FAzure-Incident-Bidirectional-APP%2Fmaster%2Fazuredeploy.json)
 ## Prerequisites
 
 - Microsoft Sentinel workspace

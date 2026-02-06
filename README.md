@@ -85,6 +85,4 @@ SOCRadar is an Extended Threat Intelligence (XTI) platform that provides actiona
 Learn more at [socradar.io](https://socradar.io)
 
 ## Support
-
-- **Documentation:** [docs.socradar.io](https://docs.socradar.io)
-- **Support:** support@socradar.io
+- **Support:** integration@socradar.io

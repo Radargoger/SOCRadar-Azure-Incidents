@@ -3,10 +3,10 @@
     "contentVersion": "1.0.0",
     "metadata": {
         "title": "SOCRadar Alarms for Microsoft Sentinel",
-        "description": "Bidirectional integration: Import SOCRadar alarms to Sentinel, sync closed incidents back to SOCRadar, with optional audit logging.",
+        "description": "Bidirectional integration: Import SOCRadar alarms to Sentinel, sync closed incidents back to SOCRadar. Includes optional audit logging, custom alarms table for analytics, and Workbook dashboard.",
         "version": "1.0.0",
         "author": "SOCRadar",
-        "lastUpdateTime": "2026-02-02T00:00:00.000Z"
+        "lastUpdateTime": "2026-02-06T00:00:00.000Z"
     },
     "parameters": {
         "WorkspaceName": {
@@ -35,17 +35,32 @@
             "maxValue": 10080,
             "metadata": { "description": "How far back to look on first run (default: 600 = 10 hours)" }
         },
+        "ImportAllStatuses": {
+            "type": "bool",
+            "defaultValue": false,
+            "metadata": { "description": "Import all alarm statuses (OPEN, RESOLVED, MITIGATED, FALSE_POSITIVE). Default: only OPEN" }
+        },
         "EnableAuditLogging": {
             "type": "bool",
             "defaultValue": true,
             "metadata": { "description": "Log all operations to Log Analytics for auditing" }
         },
+        "EnableAlarmsTable": {
+            "type": "bool",
+            "defaultValue": true,
+            "metadata": { "description": "Store alarms in custom Log Analytics table (SOCRadar_Alarms_CL) for analytics and KQL queries" }
+        },
+        "EnableWorkbook": {
+            "type": "bool",
+            "defaultValue": true,
+            "metadata": { "description": "Deploy SOCRadar Analytics Dashboard workbook" }
+        },
         "TableRetentionDays": {
             "type": "int",
-            "defaultValue": 30,
-            "minValue": 7,
+            "defaultValue": 365,
+            "minValue": 30,
             "maxValue": 730,
-            "metadata": { "description": "Audit log retention in days (7-730)" }
+            "metadata": { "description": "Data retention in days for custom tables (30-730, default: 1 year)" }
         },
         "_triggerStartTime": {
             "type": "string",
@@ -60,9 +75,15 @@
         "AuditTableName": "SOCRadarAuditLog_CL",
         "AuditDcrName": "SOCRadar-Audit-DCR",
         "AuditStreamName": "Custom-SOCRadarAuditLog_CL",
+        "DceName": "SOCRadar-DCE",
+        "AlarmsTableName": "SOCRadar_Alarms_CL",
+        "AlarmsDcrName": "SOCRadar-Alarms-DCR",
+        "AlarmsStreamName": "Custom-SOCRadar_Alarms_CL",
+        "WorkbookName": "SOCRadar-Analytics-Workbook",
         "SentinelContributorRoleId": "ab8e14d6-4a74-4a29-9ba8-549422addade",
         "LogAnalyticsReaderRoleId": "73c42c96-874c-492b-b04d-ab87d138a893",
-        "MonitoringMetricsPublisherRoleId": "3913510d-42f4-4e42-8a64-420c390055eb"
+        "MonitoringMetricsPublisherRoleId": "3913510d-42f4-4e42-8a64-420c390055eb",
+        "workspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('WorkspaceName'))]"
     },
     "resources": [
         {
@@ -135,6 +156,108 @@
             }
         },
         {
+            "condition": "[parameters('EnableAlarmsTable')]",
+            "type": "Microsoft.Insights/dataCollectionEndpoints",
+            "apiVersion": "2023-03-11",
+            "name": "[variables('DceName')]",
+            "location": "[resourceGroup().location]",
+            "properties": {
+                "description": "Data Collection Endpoint for SOCRadar integration",
+                "networkAcls": {
+                    "publicNetworkAccess": "Enabled"
+                }
+            }
+        },
+        {
+            "condition": "[parameters('EnableAlarmsTable')]",
+            "type": "Microsoft.OperationalInsights/workspaces/tables",
+            "apiVersion": "2022-10-01",
+            "name": "[concat(parameters('WorkspaceName'), '/', variables('AlarmsTableName'))]",
+            "properties": {
+                "schema": {
+                    "name": "[variables('AlarmsTableName')]",
+                    "columns": [
+                        { "name": "TimeGenerated", "type": "datetime", "description": "Ingestion timestamp" },
+                        { "name": "AlarmId", "type": "string", "description": "SOCRadar alarm ID" },
+                        { "name": "CompanyId", "type": "string", "description": "SOCRadar company ID" },
+                        { "name": "AlarmMainType", "type": "string", "description": "Main alarm category" },
+                        { "name": "AlarmSubType", "type": "string", "description": "Alarm sub-category" },
+                        { "name": "Severity", "type": "string", "description": "CRITICAL/HIGH/MEDIUM/LOW/INFO" },
+                        { "name": "Status", "type": "string", "description": "Alarm status" },
+                        { "name": "Title", "type": "string", "description": "Alarm title" },
+                        { "name": "AlarmText", "type": "string", "description": "Alarm description (truncated to 4000 chars)" },
+                        { "name": "AlarmDate", "type": "string", "description": "Original alarm date from SOCRadar" },
+                        { "name": "AlarmPayload", "type": "dynamic", "description": "Full SOCRadar alarm JSON" }
+                    ]
+                },
+                "retentionInDays": "[parameters('TableRetentionDays')]",
+                "plan": "Analytics"
+            }
+        },
+        {
+            "condition": "[parameters('EnableAlarmsTable')]",
+            "type": "Microsoft.Insights/dataCollectionRules",
+            "apiVersion": "2023-03-11",
+            "name": "[variables('AlarmsDcrName')]",
+            "location": "[resourceGroup().location]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Insights/dataCollectionEndpoints', variables('DceName'))]",
+                "[resourceId('Microsoft.OperationalInsights/workspaces/tables', parameters('WorkspaceName'), variables('AlarmsTableName'))]"
+            ],
+            "properties": {
+                "description": "DCR for SOCRadar alarms ingestion",
+                "dataCollectionEndpointId": "[resourceId('Microsoft.Insights/dataCollectionEndpoints', variables('DceName'))]",
+                "streamDeclarations": {
+                    "[variables('AlarmsStreamName')]": {
+                        "columns": [
+                            { "name": "TimeGenerated", "type": "datetime" },
+                            { "name": "AlarmId", "type": "string" },
+                            { "name": "CompanyId", "type": "string" },
+                            { "name": "AlarmMainType", "type": "string" },
+                            { "name": "AlarmSubType", "type": "string" },
+                            { "name": "Severity", "type": "string" },
+                            { "name": "Status", "type": "string" },
+                            { "name": "Title", "type": "string" },
+                            { "name": "AlarmText", "type": "string" },
+                            { "name": "AlarmDate", "type": "string" },
+                            { "name": "AlarmPayload", "type": "dynamic" }
+                        ]
+                    }
+                },
+                "destinations": {
+                    "logAnalytics": [
+                        {
+                            "workspaceResourceId": "[variables('workspaceResourceId')]",
+                            "name": "workspace"
+                        }
+                    ]
+                },
+                "dataFlows": [
+                    {
+                        "streams": [ "[variables('AlarmsStreamName')]" ],
+                        "destinations": [ "workspace" ],
+                        "transformKql": "source",
+                        "outputStream": "[variables('AlarmsStreamName')]"
+                    }
+                ]
+            }
+        },
+        {
+            "condition": "[and(parameters('EnableWorkbook'), parameters('EnableAlarmsTable'))]",
+            "type": "Microsoft.Insights/workbooks",
+            "apiVersion": "2022-04-01",
+            "name": "[guid(resourceGroup().id, 'SOCRadar-Workbook')]",
+            "location": "[resourceGroup().location]",
+            "kind": "shared",
+            "properties": {
+                "displayName": "SOCRadar Integration Dashboard",
+                "serializedData": "[concat('{\"version\":\"Notebook/1.0\",\"items\":[{\"type\":1,\"content\":{\"json\":\"# SOCRadar Integration Dashboard\\n\\nMonitor alarm imports, sync status, and analyze trends.\"},\"name\":\"header\"},{\"type\":3,\"content\":{\"version\":\"KqlItem/1.0\",\"query\":\"', variables('AlarmsTableName'), ' | summarize Count=count() by Severity | render piechart\",\"size\":1,\"title\":\"Alarms by Severity\",\"timeContext\":{\"durationMs\":604800000},\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\"},\"name\":\"severity-chart\",\"customWidth\":\"50\"},{\"type\":3,\"content\":{\"version\":\"KqlItem/1.0\",\"query\":\"', variables('AlarmsTableName'), ' | summarize Count=count() by Status | render piechart\",\"size\":1,\"title\":\"Alarms by Status\",\"timeContext\":{\"durationMs\":604800000},\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\"},\"name\":\"status-chart\",\"customWidth\":\"50\"},{\"type\":3,\"content\":{\"version\":\"KqlItem/1.0\",\"query\":\"', variables('AlarmsTableName'), ' | summarize Count=count() by bin(TimeGenerated, 1h) | render timechart\",\"size\":1,\"title\":\"Alarms Over Time (Hourly)\",\"timeContext\":{\"durationMs\":604800000},\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\"},\"name\":\"timeline\"},{\"type\":3,\"content\":{\"version\":\"KqlItem/1.0\",\"query\":\"', variables('AlarmsTableName'), ' | summarize Count=count() by AlarmMainType | top 10 by Count | render barchart\",\"size\":1,\"title\":\"Top 10 Alarm Types\",\"timeContext\":{\"durationMs\":604800000},\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\"},\"name\":\"types-chart\"},{\"type\":3,\"content\":{\"version\":\"KqlItem/1.0\",\"query\":\"', variables('AlarmsTableName'), ' | project TimeGenerated, AlarmId, Severity, AlarmMainType, AlarmSubType, Title, Status | order by TimeGenerated desc | take 50\",\"size\":1,\"title\":\"Recent Alarms (Last 50)\",\"timeContext\":{\"durationMs\":604800000},\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\"},\"name\":\"recent-alarms\"},{\"type\":1,\"content\":{\"json\":\"---\\n### Audit Logs\\nIf audit logging is enabled, you can monitor operations below.\"},\"name\":\"audit-header\"},{\"type\":3,\"content\":{\"version\":\"KqlItem/1.0\",\"query\":\"SOCRadarAuditLog_CL | summarize Count=count() by EventType | render piechart\",\"size\":1,\"title\":\"Audit Events by Type\",\"timeContext\":{\"durationMs\":604800000},\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\"},\"name\":\"audit-chart\",\"customWidth\":\"50\"},{\"type\":3,\"content\":{\"version\":\"KqlItem/1.0\",\"query\":\"SOCRadarAuditLog_CL | project TimeGenerated, EventType, AlarmId, Message | order by TimeGenerated desc | take 20\",\"size\":1,\"title\":\"Recent Audit Events\",\"timeContext\":{\"durationMs\":604800000},\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\"},\"name\":\"audit-table\",\"customWidth\":\"50\"}],\"isLocked\":false}')]",
+                "version": "1.0",
+                "sourceId": "[variables('workspaceResourceId')]",
+                "category": "sentinel"
+            }
+        },
+        {
             "type": "Microsoft.Web/connections",
             "apiVersion": "2016-06-01",
             "name": "[variables('SentinelConnectionName')]",
@@ -156,7 +279,8 @@
             "identity": { "type": "SystemAssigned" },
             "dependsOn": [
                 "[resourceId('Microsoft.Web/connections', variables('SentinelConnectionName'))]",
-                "[resourceId('Microsoft.Insights/dataCollectionRules', variables('AuditDcrName'))]"
+                "[resourceId('Microsoft.Insights/dataCollectionRules', variables('AuditDcrName'))]",
+                "[resourceId('Microsoft.Insights/dataCollectionRules', variables('AlarmsDcrName'))]"
             ],
             "properties": {
                 "state": "Enabled",
@@ -170,10 +294,17 @@
                         "AuditDcrEndpoint": { "type": "String", "defaultValue": "" },
                         "AuditDcrImmutableId": { "type": "String", "defaultValue": "" },
                         "AuditStreamName": { "type": "String", "defaultValue": "Custom-SOCRadarAuditLog_CL" },
+                        "EnableAlarmsTable": { "type": "Bool", "defaultValue": false },
+                        "DceEndpoint": { "type": "String", "defaultValue": "" },
+                        "AlarmsDcrImmutableId": { "type": "String", "defaultValue": "" },
+                        "AlarmsStreamName": { "type": "String", "defaultValue": "Custom-SOCRadar_Alarms_CL" },
                         "CompanyId": { "type": "String" },
                         "WorkspaceName": { "type": "String" },
                         "PollingIntervalMinutes": { "type": "Int" },
-                        "InitialLookbackMinutes": { "type": "Int" }
+                        "InitialLookbackMinutes": { "type": "Int" },
+                        "ImportAllStatuses": { "type": "Bool", "defaultValue": false },
+                        "SubscriptionId": { "type": "String" },
+                        "ResourceGroupName": { "type": "String" }
                     },
                     "triggers": {
                         "Recurrence": {
@@ -182,7 +313,8 @@
                                 "frequency": "Minute",
                                 "interval": "[parameters('PollingIntervalMinutes')]",
                                 "startTime": "[parameters('_triggerStartTime')]"
-                            }
+                            },
+                            "operationOptions": "SingleInstance"
                         }
                     },
                     "actions": {
@@ -270,36 +402,68 @@
                             },
                             "runAfter": { "Initialize_All_Alarms": ["Succeeded"] }
                         },
-                        "Query_All_Existing_IDs": {
-                            "type": "Http",
-                            "inputs": {
-                                "method": "GET",
-                                "uri": "[concat('https://management.azure.com/subscriptions/', subscription().subscriptionId, '/resourceGroups/', resourceGroup().name, '/providers/Microsoft.OperationalInsights/workspaces/', parameters('WorkspaceName'), '/providers/Microsoft.SecurityInsights/incidents?api-version=2023-11-01&$top=1000&$filter=startswith(properties/title, ''[SOCRadar]'')')]",
-                                "authentication": { "type": "ManagedServiceIdentity" },
-                                "retryPolicy": { "type": "exponential", "count": 4, "interval": "PT10S", "maximumInterval": "PT1H" }
-                            },
+                        "Initialize_Existing_Incidents": {
+                            "type": "InitializeVariable",
+                            "inputs": { "variables": [{ "name": "existing_incidents", "type": "array", "value": [] }] },
                             "runAfter": { "Pagination_Loop": ["Succeeded"] }
                         },
-                        "Parse_Existing_IDs": {
-                            "type": "ParseJson",
-                            "inputs": {
-                                "content": "@body('Query_All_Existing_IDs')",
-                                "schema": { "type": "object", "properties": { "value": { "type": "array", "items": { "type": "object", "properties": { "properties": { "type": "object", "properties": { "title": { "type": "string" } } } } } } } }
+                        "Initialize_Incidents_NextLink": {
+                            "type": "InitializeVariable",
+                            "inputs": { "variables": [{ "name": "incidents_next_link", "type": "string", "value": "[concat('https://management.azure.com/subscriptions/', subscription().subscriptionId, '/resourceGroups/', resourceGroup().name, '/providers/Microsoft.OperationalInsights/workspaces/', parameters('WorkspaceName'), '/providers/Microsoft.SecurityInsights/incidents?api-version=2023-11-01&$top=1000&$filter=startswith(properties/title, ''[SOCRadar]'')')]" }] },
+                            "runAfter": { "Initialize_Existing_Incidents": ["Succeeded"] }
+                        },
+                        "Pagination_Loop_Incidents": {
+                            "type": "Until",
+                            "expression": "@equals(variables('incidents_next_link'), '')",
+                            "limit": { "count": 100, "timeout": "PT1H" },
+                            "actions": {
+                                "Query_Incidents_Page": {
+                                    "type": "Http",
+                                    "inputs": {
+                                        "method": "GET",
+                                        "uri": "@variables('incidents_next_link')",
+                                        "authentication": { "type": "ManagedServiceIdentity" },
+                                        "retryPolicy": { "type": "exponential", "count": 4, "interval": "PT10S", "maximumInterval": "PT1H" }
+                                    },
+                                    "runAfter": {}
+                                },
+                                "Compose_New_Incidents": {
+                                    "type": "Compose",
+                                    "inputs": "@union(variables('existing_incidents'), coalesce(body('Query_Incidents_Page')?['value'], json('[]')))",
+                                    "runAfter": { "Query_Incidents_Page": ["Succeeded"] }
+                                },
+                                "Set_Existing_Incidents": {
+                                    "type": "SetVariable",
+                                    "inputs": {
+                                        "name": "existing_incidents",
+                                        "value": "@outputs('Compose_New_Incidents')"
+                                    },
+                                    "runAfter": { "Compose_New_Incidents": ["Succeeded"] }
+                                },
+                                "Set_Incidents_NextLink": {
+                                    "type": "SetVariable",
+                                    "inputs": {
+                                        "name": "incidents_next_link",
+                                        "value": "@coalesce(body('Query_Incidents_Page')?['nextLink'], '')"
+                                    },
+                                    "runAfter": { "Set_Existing_Incidents": ["Succeeded"] }
+                                }
                             },
-                            "runAfter": { "Query_All_Existing_IDs": ["Succeeded"] }
+                            "runAfter": { "Initialize_Incidents_NextLink": ["Succeeded"] }
                         },
                         "Extract_Existing_IDs": {
                             "type": "Select",
-                            "inputs": { "from": "@coalesce(body('Parse_Existing_IDs')?['value'], json('[]'))", "select": "@split(split(coalesce(item()?['properties']?['title'], ''), '#')[1], ' ')[0]" },
-                            "runAfter": { "Parse_Existing_IDs": ["Succeeded"] }
+                            "inputs": { "from": "@variables('existing_incidents')", "select": "@split(split(coalesce(item()?['properties']?['title'], ''), '#')[1], ' ')[0]" },
+                            "runAfter": { "Pagination_Loop_Incidents": ["Succeeded"] }
                         },
                         "For_Each_Alarm": {
                             "type": "Foreach",
                             "foreach": "@variables('all_alarms')",
+                            "runtimeConfiguration": { "concurrency": { "repetitions": 5 } },
                             "actions": {
-                                "Check_If_Open_Status": {
+                                "Check_If_Should_Import": {
                                     "type": "If",
-                                    "expression": { "and": [{ "equals": ["@coalesce(items('For_Each_Alarm')?['status'], 'OPEN')", "OPEN"] }] },
+                                    "expression": { "or": [{ "equals": ["@coalesce(items('For_Each_Alarm')?['status'], 'OPEN')", "OPEN"] }, { "equals": ["@parameters('ImportAllStatuses')", true] }] },
                                     "actions": {
                                         "Check_If_Already_Exists": {
                                             "type": "If",
@@ -317,20 +481,77 @@
                                                         "inputs": "@json(concat('[{\"Tag\": \"SOCRadar\"}', if(not(or(empty(coalesce(items('For_Each_Alarm')?['alarm_type_details']?['alarm_main_type'], '')), equals(items('For_Each_Alarm')?['alarm_type_details']?['alarm_main_type'], null))), concat(', {\"Tag\": \"', if(greater(length(items('For_Each_Alarm')?['alarm_type_details']?['alarm_main_type']), 100), concat(substring(items('For_Each_Alarm')?['alarm_type_details']?['alarm_main_type'], 0, 97), '...'), items('For_Each_Alarm')?['alarm_type_details']?['alarm_main_type']), '\"}'), ''), if(not(or(empty(coalesce(items('For_Each_Alarm')?['alarm_type_details']?['alarm_sub_type'], '')), equals(items('For_Each_Alarm')?['alarm_type_details']?['alarm_sub_type'], null))), concat(', {\"Tag\": \"', if(greater(length(items('For_Each_Alarm')?['alarm_type_details']?['alarm_sub_type']), 100), concat(substring(items('For_Each_Alarm')?['alarm_type_details']?['alarm_sub_type'], 0, 97), '...'), items('For_Each_Alarm')?['alarm_type_details']?['alarm_sub_type']), '\"}'), ''), ']'))",
                                                         "runAfter": { "Map_Severity": ["Succeeded"] }
                                                     },
-                                                    "Create_Incident": {
-                                                        "type": "ApiConnection",
-                                                        "inputs": {
-                                                            "host": { "connection": { "name": "@parameters('$connections')['azuresentinel']['connectionId']" } },
-                                                            "method": "put",
-                                                            "path": "[concat('/Incidents/subscriptions/', subscription().subscriptionId, '/resourceGroups/', resourceGroup().name, '/workspaces/', parameters('WorkspaceName'))]",
-                                                            "body": {
-                                                                "title": "[SOCRadar] #@{items('For_Each_Alarm')?['alarm_id']} - @{if(greater(length(coalesce(items('For_Each_Alarm')?['alarm_type_details']?['alarm_generic_title'], '')), 200), concat(substring(items('For_Each_Alarm')?['alarm_type_details']?['alarm_generic_title'], 0, 197), '...'), coalesce(items('For_Each_Alarm')?['alarm_type_details']?['alarm_generic_title'], 'N/A'))}",
-                                                                "description": "@{concat('SOCRadar Alarm', decodeUriComponent('%0A'), decodeUriComponent('%0A'), 'Alarm ID: ', string(items('For_Each_Alarm')?['alarm_id']), decodeUriComponent('%0A'), decodeUriComponent('%0A'), 'Main Type: ', coalesce(items('For_Each_Alarm')?['alarm_type_details']?['alarm_main_type'], 'N/A'), decodeUriComponent('%0A'), decodeUriComponent('%0A'), 'Sub Type: ', coalesce(items('For_Each_Alarm')?['alarm_type_details']?['alarm_sub_type'], 'N/A'), decodeUriComponent('%0A'), decodeUriComponent('%0A'), 'Severity: ', items('For_Each_Alarm')?['alarm_risk_level'], decodeUriComponent('%0A'), decodeUriComponent('%0A'), 'Created: ', items('For_Each_Alarm')?['date'], decodeUriComponent('%0A'), decodeUriComponent('%0A'), 'Details:', decodeUriComponent('%0A'), if(greater(length(coalesce(items('For_Each_Alarm')?['alarm_text'], '')), 1500), concat(substring(items('For_Each_Alarm')?['alarm_text'], 0, 1500), '...'), coalesce(items('For_Each_Alarm')?['alarm_text'], 'No details')), decodeUriComponent('%0A'), decodeUriComponent('%0A'), if(not(empty(items('For_Each_Alarm')?['content'])), concat('Content:', decodeUriComponent('%0A'), replace(replace(replace(replace(if(greater(length(string(items('For_Each_Alarm')?['content'])), 2000), concat(substring(string(items('For_Each_Alarm')?['content']), 0, 2000), '... [truncated]'), string(items('For_Each_Alarm')?['content'])), '\"', ''), '{', ''), '}', ''), ',', ' -*- '), decodeUriComponent('%0A'), decodeUriComponent('%0A')), ''), 'View in SOCRadar: https://platform.socradar.com/company/', items('For_Each_Alarm')?['company_id'], '/alarm/', items('For_Each_Alarm')?['alarm_id'])}",
-                                                                "severity": "@{outputs('Map_Severity')}",
-                                                                "status": "New",
-                                                                "providerName": "SOCRadar",
-                                                                "providerIncidentId": "@{items('For_Each_Alarm')?['alarm_id']}",
-                                                                "tagsToAdd": { "TagsToAdd": "@outputs('Build_Tags')" }
+                                                    "Check_If_Open_Status": {
+                                                        "type": "If",
+                                                        "expression": { "and": [{ "equals": ["@coalesce(items('For_Each_Alarm')?['status'], 'OPEN')", "OPEN"] }] },
+                                                        "actions": {
+                                                            "Create_New_Incident": {
+                                                                "type": "ApiConnection",
+                                                                "inputs": {
+                                                                    "host": { "connection": { "name": "@parameters('$connections')['azuresentinel']['connectionId']" } },
+                                                                    "method": "put",
+                                                                    "path": "[concat('/Incidents/subscriptions/', subscription().subscriptionId, '/resourceGroups/', resourceGroup().name, '/workspaces/', parameters('WorkspaceName'))]",
+                                                                    "body": {
+                                                                        "title": "[SOCRadar] #@{items('For_Each_Alarm')?['alarm_id']} - @{if(greater(length(coalesce(items('For_Each_Alarm')?['alarm_type_details']?['alarm_generic_title'], '')), 200), concat(substring(items('For_Each_Alarm')?['alarm_type_details']?['alarm_generic_title'], 0, 197), '...'), coalesce(items('For_Each_Alarm')?['alarm_type_details']?['alarm_generic_title'], 'N/A'))}",
+                                                                        "description": "@{concat('SOCRadar Alarm', decodeUriComponent('%0A'), decodeUriComponent('%0A'), 'Alarm ID: ', string(items('For_Each_Alarm')?['alarm_id']), decodeUriComponent('%0A'), decodeUriComponent('%0A'), 'Main Type: ', coalesce(items('For_Each_Alarm')?['alarm_type_details']?['alarm_main_type'], 'N/A'), decodeUriComponent('%0A'), decodeUriComponent('%0A'), 'Sub Type: ', coalesce(items('For_Each_Alarm')?['alarm_type_details']?['alarm_sub_type'], 'N/A'), decodeUriComponent('%0A'), decodeUriComponent('%0A'), 'Severity: ', items('For_Each_Alarm')?['alarm_risk_level'], decodeUriComponent('%0A'), decodeUriComponent('%0A'), 'Created: ', items('For_Each_Alarm')?['date'], decodeUriComponent('%0A'), decodeUriComponent('%0A'), 'Details:', decodeUriComponent('%0A'), if(greater(length(coalesce(items('For_Each_Alarm')?['alarm_text'], '')), 1500), concat(substring(items('For_Each_Alarm')?['alarm_text'], 0, 1500), '...'), coalesce(items('For_Each_Alarm')?['alarm_text'], 'No details')), decodeUriComponent('%0A'), decodeUriComponent('%0A'), if(not(empty(items('For_Each_Alarm')?['content'])), concat('Content:', decodeUriComponent('%0A'), replace(replace(replace(replace(if(greater(length(string(items('For_Each_Alarm')?['content'])), 2000), concat(substring(string(items('For_Each_Alarm')?['content']), 0, 2000), '... [truncated]'), string(items('For_Each_Alarm')?['content'])), '\"', ''), '{', ''), '}', ''), ',', ' -*- '), decodeUriComponent('%0A'), decodeUriComponent('%0A')), ''), 'View in SOCRadar: https://platform.socradar.com/company/', items('For_Each_Alarm')?['company_id'], '/alarm/', items('For_Each_Alarm')?['alarm_id'])}",
+                                                                        "severity": "@{outputs('Map_Severity')}",
+                                                                        "status": "New",
+                                                                        "providerName": "SOCRadar",
+                                                                        "providerIncidentId": "@{items('For_Each_Alarm')?['alarm_id']}",
+                                                                        "tagsToAdd": { "TagsToAdd": "@outputs('Build_Tags')" }
+                                                                    }
+                                                                },
+                                                                "runAfter": {}
+                                                            }
+                                                        },
+                                                        "else": {
+                                                            "actions": {
+                                                                "Map_Classification": {
+                                                                    "type": "Compose",
+                                                                    "inputs": "@if(equals(items('For_Each_Alarm')?['status'], 'FALSE_POSITIVE'), 'FalsePositive', if(equals(items('For_Each_Alarm')?['status'], 'MITIGATED'), 'BenignPositive', if(equals(items('For_Each_Alarm')?['status'], 'RESOLVED'), 'TruePositive', 'Undetermined')))",
+                                                                    "runAfter": {}
+                                                                },
+                                                                "Map_ClassificationReason": {
+                                                                    "type": "Compose",
+                                                                    "inputs": "@if(equals(outputs('Map_Classification'), 'FalsePositive'), 'InaccurateData', if(equals(outputs('Map_Classification'), 'BenignPositive'), 'SuspiciousButExpected', 'SuspiciousActivity'))",
+                                                                    "runAfter": { "Map_Classification": ["Succeeded"] }
+                                                                },
+                                                                "Build_Labels": {
+                                                                    "type": "Compose",
+                                                                    "inputs": "@json(concat('[{\"labelName\": \"SOCRadar\", \"labelType\": \"User\"}', if(not(or(empty(coalesce(items('For_Each_Alarm')?['alarm_type_details']?['alarm_main_type'], '')), equals(items('For_Each_Alarm')?['alarm_type_details']?['alarm_main_type'], null))), concat(', {\"labelName\": \"', replace(coalesce(items('For_Each_Alarm')?['alarm_type_details']?['alarm_main_type'], ''), '\"', ''), '\", \"labelType\": \"User\"}'), ''), if(not(or(empty(coalesce(items('For_Each_Alarm')?['alarm_type_details']?['alarm_sub_type'], '')), equals(items('For_Each_Alarm')?['alarm_type_details']?['alarm_sub_type'], null))), concat(', {\"labelName\": \"', replace(coalesce(items('For_Each_Alarm')?['alarm_type_details']?['alarm_sub_type'], ''), '\"', ''), '\", \"labelType\": \"User\"}'), ''), ']'))",
+                                                                    "runAfter": { "Map_ClassificationReason": ["Succeeded"] }
+                                                                },
+                                                                "Build_Base_Properties": {
+                                                                    "type": "Compose",
+                                                                    "inputs": {
+                                                                        "title": "[SOCRadar] #@{items('For_Each_Alarm')?['alarm_id']} - @{if(greater(length(coalesce(items('For_Each_Alarm')?['alarm_type_details']?['alarm_generic_title'], '')), 200), concat(substring(items('For_Each_Alarm')?['alarm_type_details']?['alarm_generic_title'], 0, 197), '...'), coalesce(items('For_Each_Alarm')?['alarm_type_details']?['alarm_generic_title'], 'N/A'))}",
+                                                                        "description": "@{concat('SOCRadar Alarm', decodeUriComponent('%0A'), decodeUriComponent('%0A'), 'Alarm ID: ', string(items('For_Each_Alarm')?['alarm_id']), decodeUriComponent('%0A'), decodeUriComponent('%0A'), 'Main Type: ', coalesce(items('For_Each_Alarm')?['alarm_type_details']?['alarm_main_type'], 'N/A'), decodeUriComponent('%0A'), decodeUriComponent('%0A'), 'Sub Type: ', coalesce(items('For_Each_Alarm')?['alarm_type_details']?['alarm_sub_type'], 'N/A'), decodeUriComponent('%0A'), decodeUriComponent('%0A'), 'Severity: ', items('For_Each_Alarm')?['alarm_risk_level'], decodeUriComponent('%0A'), decodeUriComponent('%0A'), 'Created: ', items('For_Each_Alarm')?['date'], decodeUriComponent('%0A'), decodeUriComponent('%0A'), 'Details:', decodeUriComponent('%0A'), if(greater(length(coalesce(items('For_Each_Alarm')?['alarm_text'], '')), 1500), concat(substring(items('For_Each_Alarm')?['alarm_text'], 0, 1500), '...'), coalesce(items('For_Each_Alarm')?['alarm_text'], 'No details')), decodeUriComponent('%0A'), decodeUriComponent('%0A'), if(not(empty(items('For_Each_Alarm')?['content'])), concat('Content:', decodeUriComponent('%0A'), replace(replace(replace(replace(if(greater(length(string(items('For_Each_Alarm')?['content'])), 2000), concat(substring(string(items('For_Each_Alarm')?['content']), 0, 2000), '... [truncated]'), string(items('For_Each_Alarm')?['content'])), '\"', ''), '{', ''), '}', ''), ',', ' -*- '), decodeUriComponent('%0A'), decodeUriComponent('%0A')), ''), 'View in SOCRadar: https://platform.socradar.com/company/', items('For_Each_Alarm')?['company_id'], '/alarm/', items('For_Each_Alarm')?['alarm_id'])}",
+                                                                        "severity": "@{outputs('Map_Severity')}",
+                                                                        "status": "Closed",
+                                                                        "classification": "@{outputs('Map_Classification')}",
+                                                                        "labels": "@outputs('Build_Labels')"
+                                                                    },
+                                                                    "runAfter": { "Build_Labels": ["Succeeded"] }
+                                                                },
+                                                                "Add_ClassificationReason_If_Needed": {
+                                                                    "type": "Compose",
+                                                                    "inputs": "@if(equals(outputs('Map_Classification'), 'Undetermined'), outputs('Build_Base_Properties'), setProperty(outputs('Build_Base_Properties'), 'classificationReason', outputs('Map_ClassificationReason')))",
+                                                                    "runAfter": { "Build_Base_Properties": ["Succeeded"] }
+                                                                },
+                                                                "Create_Closed_Incident": {
+                                                                    "type": "Http",
+                                                                    "inputs": {
+                                                                        "method": "PUT",
+                                                                        "uri": "https://management.azure.com/subscriptions/@{parameters('SubscriptionId')}/resourceGroups/@{parameters('ResourceGroupName')}/providers/Microsoft.OperationalInsights/workspaces/@{parameters('WorkspaceName')}/providers/Microsoft.SecurityInsights/incidents/@{guid()}?api-version=2023-11-01",
+                                                                        "headers": { "Content-Type": "application/json" },
+                                                                        "authentication": { "type": "ManagedServiceIdentity", "audience": "https://management.azure.com" },
+                                                                        "body": {
+                                                                            "properties": "@outputs('Add_ClassificationReason_If_Needed')"
+                                                                        },
+                                                                        "retryPolicy": { "type": "exponential", "count": 4, "interval": "PT10S", "maximumInterval": "PT1H" }
+                                                                    },
+                                                                    "runAfter": { "Add_ClassificationReason_If_Needed": ["Succeeded"] }
+                                                                }
                                                             }
                                                         },
                                                         "runAfter": { "Build_Tags": ["Succeeded"] }
@@ -346,13 +567,45 @@
                                                                     "uri": "@{concat(parameters('AuditDcrEndpoint'), '/dataCollectionRules/', parameters('AuditDcrImmutableId'), '/streams/', parameters('AuditStreamName'), '?api-version=2023-01-01')}",
                                                                     "headers": { "Content-Type": "application/json" },
                                                                     "authentication": { "type": "ManagedServiceIdentity", "audience": "https://monitor.azure.com" },
-                                                                    "body": [{ "TimeGenerated": "@{utcNow()}", "EventType": "AlarmImported", "AlarmId": "@{items('For_Each_Alarm')?['alarm_id']}", "IncidentId": "@{body('Create_Incident')?['properties']?['incidentNumber']}", "AlarmType": "@{coalesce(items('For_Each_Alarm')?['alarm_type_details']?['alarm_main_type'], 'N/A')}", "Status": "@{items('For_Each_Alarm')?['status']}", "Severity": "@{items('For_Each_Alarm')?['alarm_risk_level']}", "Message": "Alarm imported to Sentinel", "FullAlarmJson": "@items('For_Each_Alarm')" }]
+                                                                    "body": [{ "TimeGenerated": "@{utcNow()}", "EventType": "AlarmImported", "AlarmId": "@{items('For_Each_Alarm')?['alarm_id']}", "IncidentId": "@{items('For_Each_Alarm')?['alarm_id']}", "AlarmType": "@{coalesce(items('For_Each_Alarm')?['alarm_type_details']?['alarm_main_type'], 'N/A')}", "Status": "@{items('For_Each_Alarm')?['status']}", "Severity": "@{items('For_Each_Alarm')?['alarm_risk_level']}", "Message": "Alarm imported to Sentinel", "FullAlarmJson": "@items('For_Each_Alarm')" }]
                                                                 },
                                                                 "runAfter": {}
                                                             }
                                                         },
                                                         "else": { "actions": {} },
-                                                        "runAfter": { "Create_Incident": ["Succeeded"] }
+                                                        "runAfter": { "Check_If_Open_Status": ["Succeeded"] }
+                                                    },
+                                                    "Check_Alarms_Table_Enabled": {
+                                                        "type": "If",
+                                                        "expression": { "and": [{ "equals": ["@parameters('EnableAlarmsTable')", true] }] },
+                                                        "actions": {
+                                                            "Ingest_To_Custom_Table": {
+                                                                "type": "Http",
+                                                                "inputs": {
+                                                                    "method": "POST",
+                                                                    "uri": "@{concat(parameters('DceEndpoint'), '/dataCollectionRules/', parameters('AlarmsDcrImmutableId'), '/streams/', parameters('AlarmsStreamName'), '?api-version=2023-01-01')}",
+                                                                    "headers": { "Content-Type": "application/json" },
+                                                                    "authentication": { "type": "ManagedServiceIdentity", "audience": "https://monitor.azure.com" },
+                                                                    "body": [{
+                                                                        "TimeGenerated": "@{utcNow()}",
+                                                                        "AlarmId": "@{string(items('For_Each_Alarm')?['alarm_id'])}",
+                                                                        "CompanyId": "@{string(items('For_Each_Alarm')?['company_id'])}",
+                                                                        "AlarmMainType": "@{coalesce(items('For_Each_Alarm')?['alarm_type_details']?['alarm_main_type'], '')}",
+                                                                        "AlarmSubType": "@{coalesce(items('For_Each_Alarm')?['alarm_type_details']?['alarm_sub_type'], '')}",
+                                                                        "Severity": "@{coalesce(items('For_Each_Alarm')?['alarm_risk_level'], '')}",
+                                                                        "Status": "@{coalesce(items('For_Each_Alarm')?['status'], '')}",
+                                                                        "Title": "@{coalesce(items('For_Each_Alarm')?['alarm_type_details']?['alarm_generic_title'], '')}",
+                                                                        "AlarmText": "@{if(greater(length(coalesce(items('For_Each_Alarm')?['alarm_text'], '')), 4000), concat(substring(items('For_Each_Alarm')?['alarm_text'], 0, 3997), '...'), coalesce(items('For_Each_Alarm')?['alarm_text'], ''))}",
+                                                                        "AlarmDate": "@{coalesce(items('For_Each_Alarm')?['date'], '')}",
+                                                                        "AlarmPayload": "@items('For_Each_Alarm')"
+                                                                    }],
+                                                                    "retryPolicy": { "type": "exponential", "count": 4, "interval": "PT10S", "maximumInterval": "PT1H" }
+                                                                },
+                                                                "runAfter": {}
+                                                            }
+                                                        },
+                                                        "else": { "actions": {} },
+                                                        "runAfter": { "Check_Audit_Enabled": ["Succeeded"] }
                                                     }
                                                 }
                                             },
@@ -386,7 +639,14 @@
                     "EnableAuditLogging": { "value": "[parameters('EnableAuditLogging')]" },
                     "AuditDcrEndpoint": { "value": "[if(parameters('EnableAuditLogging'), reference(resourceId('Microsoft.Insights/dataCollectionRules', variables('AuditDcrName')), '2023-03-11').endpoints.logsIngestion, '')]" },
                     "AuditDcrImmutableId": { "value": "[if(parameters('EnableAuditLogging'), reference(resourceId('Microsoft.Insights/dataCollectionRules', variables('AuditDcrName')), '2023-03-11').immutableId, '')]" },
-                    "AuditStreamName": { "value": "[variables('AuditStreamName')]" }
+                    "AuditStreamName": { "value": "[variables('AuditStreamName')]" },
+                    "EnableAlarmsTable": { "value": "[parameters('EnableAlarmsTable')]" },
+                    "DceEndpoint": { "value": "[if(parameters('EnableAlarmsTable'), reference(resourceId('Microsoft.Insights/dataCollectionEndpoints', variables('DceName')), '2023-03-11').logsIngestion.endpoint, '')]" },
+                    "AlarmsDcrImmutableId": { "value": "[if(parameters('EnableAlarmsTable'), reference(resourceId('Microsoft.Insights/dataCollectionRules', variables('AlarmsDcrName')), '2023-03-11').immutableId, '')]" },
+                    "AlarmsStreamName": { "value": "[variables('AlarmsStreamName')]" },
+                    "ImportAllStatuses": { "value": "[parameters('ImportAllStatuses')]" },
+                    "SubscriptionId": { "value": "[subscription().subscriptionId]" },
+                    "ResourceGroupName": { "value": "[resourceGroup().name]" }
                 }
             }
         },
@@ -414,7 +674,8 @@
                     "triggers": {
                         "Recurrence": {
                             "type": "Recurrence",
-                            "recurrence": { "frequency": "Minute", "interval": "[parameters('PollingIntervalMinutes')]", "startTime": "[parameters('_triggerStartTime')]" }
+                            "recurrence": { "frequency": "Minute", "interval": "[parameters('PollingIntervalMinutes')]", "startTime": "[parameters('_triggerStartTime')]" },
+                            "operationOptions": "SingleInstance"
                         }
                     },
                     "actions": {
@@ -423,27 +684,59 @@
                             "inputs": "@addMinutes(utcNow(), mul(-2, parameters('PollingIntervalMinutes')))",
                             "runAfter": {}
                         },
-                        "Query_Closed_SOCRadar_Incidents": {
-                            "type": "Http",
-                            "inputs": {
-                                "method": "GET",
-                                "uri": "[concat('https://management.azure.com/subscriptions/', subscription().subscriptionId, '/resourceGroups/', resourceGroup().name, '/providers/Microsoft.OperationalInsights/workspaces/', parameters('WorkspaceName'), '/providers/Microsoft.SecurityInsights/incidents?api-version=2023-11-01&$top=1000&$filter=properties/labels/any(label: label/labelName eq ''SOCRadar'') and properties/status eq ''Closed'' and properties/lastModifiedTimeUtc ge @{outputs(''Calculate_Lookback_Time'')}')]",
-                                "authentication": { "type": "ManagedServiceIdentity" },
-                                "retryPolicy": { "type": "exponential", "count": 4, "interval": "PT10S", "maximumInterval": "PT1H" }
-                            },
+                        "Initialize_Closed_Incidents": {
+                            "type": "InitializeVariable",
+                            "inputs": { "variables": [{ "name": "closed_incidents", "type": "array", "value": [] }] },
                             "runAfter": { "Calculate_Lookback_Time": ["Succeeded"] }
                         },
-                        "Parse_Incidents": {
-                            "type": "ParseJson",
-                            "inputs": {
-                                "content": "@body('Query_Closed_SOCRadar_Incidents')",
-                                "schema": { "type": "object", "properties": { "value": { "type": "array", "items": { "type": "object", "properties": { "name": { "type": "string" }, "properties": { "type": "object", "properties": { "title": { "type": "string" }, "status": { "type": "string" }, "severity": { "type": "string" }, "classification": { "type": "string" }, "labels": { "type": "array" } } } } } } } }
+                        "Initialize_Closed_NextLink": {
+                            "type": "InitializeVariable",
+                            "inputs": { "variables": [{ "name": "closed_next_link", "type": "string", "value": "[concat('https://management.azure.com/subscriptions/', subscription().subscriptionId, '/resourceGroups/', resourceGroup().name, '/providers/Microsoft.OperationalInsights/workspaces/', parameters('WorkspaceName'), '/providers/Microsoft.SecurityInsights/incidents?api-version=2023-11-01&$top=1000&$filter=properties/labels/any(label: label/labelName eq ''SOCRadar'') and properties/status eq ''Closed'' and properties/lastModifiedTimeUtc ge @{outputs(''Calculate_Lookback_Time'')}')]" }] },
+                            "runAfter": { "Initialize_Closed_Incidents": ["Succeeded"] }
+                        },
+                        "Pagination_Loop_Closed": {
+                            "type": "Until",
+                            "expression": "@equals(variables('closed_next_link'), '')",
+                            "limit": { "count": 100, "timeout": "PT1H" },
+                            "actions": {
+                                "Query_Closed_Page": {
+                                    "type": "Http",
+                                    "inputs": {
+                                        "method": "GET",
+                                        "uri": "@variables('closed_next_link')",
+                                        "authentication": { "type": "ManagedServiceIdentity" },
+                                        "retryPolicy": { "type": "exponential", "count": 4, "interval": "PT10S", "maximumInterval": "PT1H" }
+                                    },
+                                    "runAfter": {}
+                                },
+                                "Compose_New_Closed": {
+                                    "type": "Compose",
+                                    "inputs": "@union(variables('closed_incidents'), coalesce(body('Query_Closed_Page')?['value'], json('[]')))",
+                                    "runAfter": { "Query_Closed_Page": ["Succeeded"] }
+                                },
+                                "Set_Closed_Incidents": {
+                                    "type": "SetVariable",
+                                    "inputs": {
+                                        "name": "closed_incidents",
+                                        "value": "@outputs('Compose_New_Closed')"
+                                    },
+                                    "runAfter": { "Compose_New_Closed": ["Succeeded"] }
+                                },
+                                "Set_Closed_NextLink": {
+                                    "type": "SetVariable",
+                                    "inputs": {
+                                        "name": "closed_next_link",
+                                        "value": "@coalesce(body('Query_Closed_Page')?['nextLink'], '')"
+                                    },
+                                    "runAfter": { "Set_Closed_Incidents": ["Succeeded"] }
+                                }
                             },
-                            "runAfter": { "Query_Closed_SOCRadar_Incidents": ["Succeeded"] }
+                            "runAfter": { "Initialize_Closed_NextLink": ["Succeeded"] }
                         },
                         "For_Each_Incident": {
                             "type": "Foreach",
-                            "foreach": "@body('Parse_Incidents')?['value']",
+                            "foreach": "@variables('closed_incidents')",
+                            "runtimeConfiguration": { "concurrency": { "repetitions": 5 } },
                             "actions": {
                                 "Extract_Alarm_ID": {
                                     "type": "Compose",
@@ -496,14 +789,14 @@
                                                 "body": { "properties": { "title": "@{items('For_Each_Incident')?['properties']?['title']}", "status": "@{items('For_Each_Incident')?['properties']?['status']}", "severity": "@{items('For_Each_Incident')?['properties']?['severity']}", "classification": "@{items('For_Each_Incident')?['properties']?['classification']}", "classificationReason": "@{items('For_Each_Incident')?['properties']?['classificationReason']}", "labels": "@union(coalesce(items('For_Each_Incident')?['properties']?['labels'], json('[]')), json('[{\"labelName\": \"Synced\", \"labelType\": \"User\"}]'))" } },
                                                 "retryPolicy": { "type": "exponential", "count": 4, "interval": "PT10S", "maximumInterval": "PT1H" }
                                             },
-                                            "runAfter": { "Update_SOCRadar_Severity": ["Succeeded"] }
+                                            "runAfter": { "Update_SOCRadar_Severity": ["Succeeded", "Failed", "Skipped", "TimedOut"] }
                                         }
                                     },
                                     "else": { "actions": {} },
                                     "runAfter": { "Check_Has_Synced_Tag": ["Succeeded"] }
                                 }
                             },
-                            "runAfter": { "Parse_Incidents": ["Succeeded"] }
+                            "runAfter": { "Pagination_Loop_Closed": ["Succeeded"] }
                         }
                     }
                 },
@@ -565,6 +858,22 @@
             }
         },
         {
+            "condition": "[parameters('EnableAlarmsTable')]",
+            "type": "Microsoft.Authorization/roleAssignments",
+            "apiVersion": "2022-04-01",
+            "name": "[guid(resourceId('Microsoft.Insights/dataCollectionRules', variables('AlarmsDcrName')), variables('ImportPlaybookName'), variables('MonitoringMetricsPublisherRoleId'))]",
+            "scope": "[resourceId('Microsoft.Insights/dataCollectionRules', variables('AlarmsDcrName'))]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Logic/workflows', variables('ImportPlaybookName'))]",
+                "[resourceId('Microsoft.Insights/dataCollectionRules', variables('AlarmsDcrName'))]"
+            ],
+            "properties": {
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('MonitoringMetricsPublisherRoleId'))]",
+                "principalId": "[reference(resourceId('Microsoft.Logic/workflows', variables('ImportPlaybookName')), '2019-05-01', 'Full').identity.principalId]",
+                "principalType": "ServicePrincipal"
+            }
+        },
+        {
             "type": "Microsoft.Authorization/roleAssignments",
             "apiVersion": "2022-04-01",
             "name": "[guid(resourceGroup().id, variables('SyncPlaybookName'), variables('SentinelContributorRoleId'))]",
@@ -580,6 +889,9 @@
         "importLogicAppName": { "type": "string", "value": "[variables('ImportPlaybookName')]" },
         "syncLogicAppName": { "type": "string", "value": "[variables('SyncPlaybookName')]" },
         "auditTableName": { "type": "string", "value": "[if(parameters('EnableAuditLogging'), variables('AuditTableName'), 'N/A')]" },
+        "alarmsTableName": { "type": "string", "value": "[if(parameters('EnableAlarmsTable'), variables('AlarmsTableName'), 'N/A')]" },
+        "dceName": { "type": "string", "value": "[if(parameters('EnableAlarmsTable'), variables('DceName'), 'N/A')]" },
+        "workbookName": { "type": "string", "value": "[if(parameters('EnableWorkbook'), variables('WorkbookName'), 'N/A')]" },
         "pollingInterval": { "type": "string", "value": "[concat(parameters('PollingIntervalMinutes'), ' minutes')]" }
     }
 }

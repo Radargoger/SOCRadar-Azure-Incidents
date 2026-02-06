@@ -1,8 +1,11 @@
+
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FRadargoger%2FAzure-Incident-Bidirectional-APP%2Fmaster%2Fazuredeploy.json)
 # SOCRadar Alarms for Microsoft Sentinel
 
 Bidirectional integration between SOCRadar XTI Platform and Microsoft Sentinel.
 
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FRadargoger%2FAzure-Incident-Bidirectional-APP%2Fmaster%2Fazuredeploy.json)
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Forcunsami%2FSOCRadar-Azure-Incidents%2Fmaster%2Fazuredeploy.json)
+
 ## Prerequisites
 
 - Microsoft Sentinel workspace
@@ -27,14 +30,18 @@ Bidirectional integration between SOCRadar XTI Platform and Microsoft Sentinel.
 | `PollingIntervalMinutes` | 5 | How often to check for alarms (1-60 min) |
 | `InitialLookbackMinutes` | 600 | First run lookback (default: 10 hours) |
 | `EnableAuditLogging` | true | Log operations to Log Analytics |
-| `TableRetentionDays` | 30 | Audit log retention (7-730 days) |
+| `EnableAlarmsTable` | true | Store alarms in SOCRadar_Alarms_CL table for analytics |
+| `EnableWorkbook` | true | Deploy SOCRadar Analytics Dashboard |
+| `TableRetentionDays` | 365 | Data retention (30-730 days) |
 
 ## What Gets Deployed
 
 - **SOCRadar-Alarm-Import** - Imports alarms from SOCRadar as Sentinel incidents
 - **SOCRadar-Alarm-Sync** - Syncs closed incidents back to SOCRadar
-- **SOCRadarAuditLog_CL** - Log Analytics table for audit (if enabled)
-- **Data Collection Rule** - For audit log ingestion (if enabled)
+- **SOCRadar_Alarms_CL** - Custom table for alarm analytics (if EnableAlarmsTable=true)
+- **SOCRadar Analytics Dashboard** - Workbook with charts and tables (if EnableWorkbook=true)
+- **SOCRadarAuditLog_CL** - Audit log table (if EnableAuditLogging=true)
+- **Data Collection Endpoint & Rules** - For data ingestion
 
 ## Key Features
 
@@ -51,6 +58,19 @@ Bidirectional integration between SOCRadar XTI Platform and Microsoft Sentinel.
 **Audit Logging**
 - Full alarm JSON stored in Log Analytics
 - Query with KQL for reporting
+
+**Analytics Dashboard**
+- Severity and status distribution charts
+- Alarm timeline visualization
+- Top alarm types bar chart
+- Recent alarms table
+
+**KQL Queries**
+- See `socradar-kql-queries.kql` for 24 ready-to-use queries including:
+  - Alarm overview and trends
+  - Incident correlation
+  - Audit log analysis
+  - Alert rules for scheduled analytics
 
 ## Post-Deployment
 

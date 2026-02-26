@@ -25,6 +25,8 @@ Bidirectional integration between SOCRadar XTI Platform and Microsoft Sentinel.
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
+| `WorkspaceResourceGroup` | *(same as deployment RG)* | Set if your workspace is in a different resource group |
+| `SentinelRoleLevel` | Responder | Sentinel role for Logic Apps (see [Role Selection](#role-selection)) |
 | `PollingIntervalMinutes` | 5 | How often to check for alarms (1-60 min) |
 | `InitialLookbackMinutes` | 600 | First run lookback (default: 10 hours) |
 | `EnableAuditLogging` | true | Log operations to Log Analytics |
@@ -70,6 +72,22 @@ Bidirectional integration between SOCRadar XTI Platform and Microsoft Sentinel.
   - Audit log analysis
   - Alert rules for scheduled analytics
 
+## Role Selection
+
+The template assigns a Sentinel role to Logic App managed identities. Two options are available:
+
+| Role | Permissions | Use Case |
+|------|------------|----------|
+| **Responder** (default) | Create, update, close, classify incidents | Sufficient for this integration |
+| **Contributor** | All Responder permissions + delete incidents, manage analytics rules, settings | Required if your environment has custom automation rules that depend on Contributor-level access |
+
+The default is **Responder**, following the least-privilege principle. If your organization's automation rules or policies require Contributor-level access for integrations, set `SentinelRoleLevel` to `Contributor` during deployment.
+
+## Cross-Region / Cross-Resource-Group
+
+- If your workspace is in a different **region**, set `WorkspaceLocation` to match your workspace region.
+- If your workspace is in a different **resource group**, set `WorkspaceResourceGroup`. Custom tables, workbook, and audit logging require same-RG deployment.
+
 ## Post-Deployment
 
 Logic Apps are configured to start **3 minutes after deployment** to allow Azure role propagation.
@@ -81,8 +99,5 @@ No manual action required - they will start automatically.
 SOCRadar is an Extended Threat Intelligence (XTI) platform that provides actionable threat intelligence, digital risk protection, and external attack surface management.
 
 Learn more at [socradar.io](https://socradar.io)
+- **Support:** integration@socradar.io
 
-## Support
-
-- **Documentation:** [docs.socradar.io](https://docs.socradar.io)
-- **Support:** support@socradar.io

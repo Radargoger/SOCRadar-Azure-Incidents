@@ -627,7 +627,7 @@
                             "type": "Http",
                             "inputs": {
                                 "method": "GET",
-                                "uri": "[concat('https://management.azure.com/subscriptions/', subscription().subscriptionId, '/resourceGroups/', parameters('WorkspaceResourceGroup'), '/providers/Microsoft.OperationalInsights/workspaces/', parameters('WorkspaceName'), '/providers/Microsoft.SecurityInsights/incidents?api-version=2023-11-01&$top=1&$filter=startswith(properties/title, ''[SOCRadar]'')')]",
+                                "uri": "[concat('https://management.azure.com/subscriptions/', subscription().subscriptionId, '/resourceGroups/', parameters('WorkspaceResourceGroup'), '/providers/Microsoft.OperationalInsights/workspaces/', parameters('WorkspaceName'), '/providers/Microsoft.SecurityInsights/incidents?api-version=2023-11-01&$top=1&$orderby=properties/createdTimeUtc%20desc&$filter=startswith(properties/title, ''[SOCRadar]'')')]",
                                 "authentication": {
                                     "type": "ManagedServiceIdentity"
                                 },
@@ -642,7 +642,7 @@
                         },
                         "Determine_Lookback": {
                             "type": "Compose",
-                            "inputs": "@if(equals(length(coalesce(body('Query_Existing_SOCRadar_Incidents')?['value'], json('[]'))), 0), parameters('InitialLookbackMinutes'), max(mul(parameters('PollingIntervalMinutes'), 6), 60))",
+                            "inputs": "@if(equals(length(coalesce(body('Query_Existing_SOCRadar_Incidents')?['value'], json('[]'))), 0), parameters('InitialLookbackMinutes'), min(max(add(div(sub(ticks(utcNow()), ticks(coalesce(first(body('Query_Existing_SOCRadar_Incidents')?['value'])?['properties']?['createdTimeUtc'], utcNow()))), 600000000), 15), mul(parameters('PollingIntervalMinutes'), 6)), 10080))",
                             "runAfter": {
                                 "Query_Existing_SOCRadar_Incidents": [
                                     "Succeeded"
@@ -1236,6 +1236,50 @@
                                                                                 "type": "Http",
                                                                                 "runAfter": {
                                                                                     "Create_IoC_Bookmark": [
+                                                                                        "Succeeded"
+                                                                                    ]
+                                                                                },
+                                                                                "inputs": {
+                                                                                    "method": "PUT",
+                                                                                    "uri": "https://management.azure.com@{body('Create_New_Incident')?['id']}/relations/@{guid()}?api-version=2023-11-01",
+                                                                                    "headers": {
+                                                                                        "Content-Type": "application/json"
+                                                                                    },
+                                                                                    "authentication": {
+                                                                                        "type": "ManagedServiceIdentity",
+                                                                                        "audience": "https://management.azure.com"
+                                                                                    },
+                                                                                    "body": {
+                                                                                        "properties": {
+                                                                                            "relatedResourceId": "@{body('Create_IoC_Bookmark')?['id']}"
+                                                                                        }
+                                                                                    },
+                                                                                    "retryPolicy": {
+                                                                                        "type": "exponential",
+                                                                                        "count": 3,
+                                                                                        "interval": "PT10S"
+                                                                                    }
+                                                                                }
+                                                                            },
+                                                                            "Delay_Before_Relation_Retry": {
+                                                                                "type": "Wait",
+                                                                                "runAfter": {
+                                                                                    "Relate_Bookmark_To_Incident": [
+                                                                                        "Failed",
+                                                                                        "TimedOut"
+                                                                                    ]
+                                                                                },
+                                                                                "inputs": {
+                                                                                    "interval": {
+                                                                                        "count": 15,
+                                                                                        "unit": "Second"
+                                                                                    }
+                                                                                }
+                                                                            },
+                                                                            "Relate_Bookmark_Retry": {
+                                                                                "type": "Http",
+                                                                                "runAfter": {
+                                                                                    "Delay_Before_Relation_Retry": [
                                                                                         "Succeeded"
                                                                                     ]
                                                                                 },

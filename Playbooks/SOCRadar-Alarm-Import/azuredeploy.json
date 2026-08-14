@@ -371,7 +371,7 @@
                             "type": "Select",
                             "inputs": {
                                 "from": "@variables('existing_incidents')",
-                                "select": "@split(split(coalesce(item()?['properties']?['title'], ''), '#')[1], ' ')[0]"
+                                "select": "@if(contains(coalesce(item()?['properties']?['title'], ''), '#'), split(split(coalesce(item()?['properties']?['title'], ''), '#')[1], ' ')[0], '')"
                             },
                             "runAfter": { "Pagination_Loop_Incidents": ["Succeeded"] }
                         },

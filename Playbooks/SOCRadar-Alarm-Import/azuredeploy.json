@@ -182,7 +182,7 @@
                             "type": "Http",
                             "inputs": {
                                 "method": "GET",
-                                "uri": "[concat('https://management.azure.com/subscriptions/', subscription().subscriptionId, '/resourceGroups/', parameters('WorkspaceResourceGroup'), '/providers/Microsoft.OperationalInsights/workspaces/', parameters('WorkspaceName'), '/providers/Microsoft.SecurityInsights/incidents?api-version=2023-11-01&$top=1&$filter=startswith(properties/title, ''[SOCRadar]'')')]",
+                                "uri": "[concat('https://management.azure.com/subscriptions/', subscription().subscriptionId, '/resourceGroups/', parameters('WorkspaceResourceGroup'), '/providers/Microsoft.OperationalInsights/workspaces/', parameters('WorkspaceName'), '/providers/Microsoft.SecurityInsights/incidents?api-version=2023-11-01&$top=1&$orderby=properties/createdTimeUtc%20desc&$filter=startswith(properties/title, ''[SOCRadar]'')')]",
                                 "authentication": { "type": "ManagedServiceIdentity" },
                                 "retryPolicy": { "type": "exponential", "count": 4, "interval": "PT10S", "maximumInterval": "PT1H" }
                             },
@@ -190,7 +190,7 @@
                         },
                         "Determine_Lookback": {
                             "type": "Compose",
-                            "inputs": "@if(equals(length(coalesce(body('Query_Existing_SOCRadar_Incidents')?['value'], json('[]'))), 0), parameters('InitialLookbackMinutes'), mul(parameters('PollingIntervalMinutes'), 2))",
+                            "inputs": "@if(equals(length(coalesce(body('Query_Existing_SOCRadar_Incidents')?['value'], json('[]'))), 0), parameters('InitialLookbackMinutes'), min(max(add(div(sub(ticks(utcNow()), ticks(coalesce(first(body('Query_Existing_SOCRadar_Incidents')?['value'])?['properties']?['createdTimeUtc'], utcNow()))), 600000000), 15), mul(parameters('PollingIntervalMinutes'), 6)), 10080))",
                             "runAfter": { "Query_Existing_SOCRadar_Incidents": ["Succeeded"] }
                         },
                         "Calculate_Epoch_Start": {

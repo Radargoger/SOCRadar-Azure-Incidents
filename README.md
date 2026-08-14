@@ -126,6 +126,12 @@ The separate playbook templates do not include IoC entity enrichment, and they e
 infrastructure templates to be deployed first. Prefer the one-click template unless you have
 a reason to split the deployment.
 
+When deploying the import playbook separately, pass the data collection rule resource IDs from
+the infrastructure template outputs: `alarmsDcrId` into `AlarmsDcrResourceId` and `dcrId` into
+`AuditDcrResourceId`. The template uses them to grant the playbook identity **Monitoring Metrics
+Publisher** on each rule. Left empty, the playbook still deploys but every ingestion call returns
+403 and the custom tables stay empty.
+
 ## Cross-Region / Cross-Resource-Group
 
 - If your workspace is in a different **region**, set `WorkspaceLocation` to match your workspace region.

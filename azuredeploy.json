@@ -1876,8 +1876,7 @@
                                             "runtimeConfiguration": {
                                                 "secureData": {
                                                     "properties": [
-                                                        "inputs",
-                                                        "outputs"
+                                                        "inputs"
                                                     ]
                                                 }
                                             },
@@ -1915,8 +1914,7 @@
                                             "runtimeConfiguration": {
                                                 "secureData": {
                                                     "properties": [
-                                                        "inputs",
-                                                        "outputs"
+                                                        "inputs"
                                                     ]
                                                 }
                                             },
@@ -1926,6 +1924,25 @@
                                                 ]
                                             }
                                         },
+                                        "Check_SOCRadar_Write_Succeeded": {
+                                            "type": "If",
+                                            "expression": {
+                                                "or": [
+                                                    {
+                                                        "equals": [
+                                                            "@coalesce(body('Update_SOCRadar_Status')?['is_success'], false)",
+                                                            true
+                                                        ]
+                                                    },
+                                                    {
+                                                        "contains": [
+                                                            "@toLower(string(coalesce(body('Update_SOCRadar_Status')?['message'], '')))",
+                                                            "already"
+                                                        ]
+                                                    }
+                                                ]
+                                            },
+                                            "actions": {
                                         "Add_Synced_Tag": {
                                             "type": "Http",
                                             "inputs": {
@@ -1959,6 +1976,9 @@
                                                     "interval": "PT10S",
                                                     "maximumInterval": "PT1H"
                                                 }
+                                            },
+                                            "runAfter": {}
+                                        }
                                             },
                                             "runAfter": {
                                                 "Update_SOCRadar_Status": [

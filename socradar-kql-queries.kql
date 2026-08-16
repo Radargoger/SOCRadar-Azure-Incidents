@@ -89,27 +89,42 @@ SOCRadarAuditLog_CL
 // -----------------------------------------
 // 4. LOGIC APP DIAGNOSTICS
 // -----------------------------------------
+//
+// PREREQUISITE: the two queries in this section read the AzureDiagnostics table, which is
+// empty unless you send Logic App runtime logs to this workspace. The deployment template
+// does NOT configure that (it would add ingestion cost). Enable it per playbook with:
+//
+//   az monitor diagnostic-settings create \
+//     --name socradar-logicapp-diagnostics \
+//     --resource <logic app resource id> \
+//     --workspace <workspace resource id> \
+//     --logs '[{"category":"WorkflowRuntime","enabled":true}]'
+//
+// Without it these two queries return "BadArgumentError" because the table does not exist.
+// Application-level failures are recorded in SOCRadarAuditLog_CL instead (section 3).
 
-// Failed Logic App runs
+// Failed Logic App actions
 AzureDiagnostics
-| where ResourceType == "WORKFLOWS"
+| where Category == "WorkflowRuntime"
 | where resource_workflowName_s contains "SOCRadar"
 | where status_s == "Failed"
 | project
     TimeGenerated,
     Workflow = resource_workflowName_s,
-    Action = action_s,
+    Action = resource_actionName_s,
     Error = error_message_s
 | order by TimeGenerated desc
 
 // Logic App run durations
 AzureDiagnostics
-| where ResourceType == "WORKFLOWS"
+| where Category == "WorkflowRuntime"
+| where OperationName == "Microsoft.Logic/workflows/workflowRunCompleted"
 | where resource_workflowName_s contains "SOCRadar"
 | where status_s == "Succeeded"
+| extend DurationSec = datetime_diff("second", endTime_t, startTime_t)
 | summarize
-    AvgDuration = avg(duration_s),
-    MaxDuration = max(duration_s),
+    AvgSeconds = round(avg(DurationSec), 1),
+    MaxSeconds = max(DurationSec),
     RunCount = count()
     by resource_workflowName_s
 
@@ -132,7 +147,7 @@ SOCRadar_Alarms_CL
     Severity,
     Title,
     AlarmDate,
-    DaysOpen = datetime_diff('day', now(), AlarmDate)
+    DaysOpen = datetime_diff('day', now(), todatetime(AlarmDate))
 | order by Severity, DaysOpen desc
 
 // Alarm trends by type (week over week)

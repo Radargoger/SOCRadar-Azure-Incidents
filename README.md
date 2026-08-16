@@ -48,6 +48,14 @@ Bidirectional integration between SOCRadar XTI Platform and Microsoft Sentinel.
 - **SOCRadar Analytics Dashboard** - Workbook with charts and tables (if EnableWorkbook=true)
 - **SOCRadarAuditLog_CL** - Audit log table (if EnableAuditLogging=true)
 - **Data Collection Endpoint & Rules** - For data ingestion
+- **Workspace and Sentinel onboarding** - only when `WorkspaceName` does not already exist
+- **Role assignments** - the two playbook identities get the least privilege they need:
+  Log Analytics Reader, Monitoring Metrics Publisher on each data collection rule, and the
+  Sentinel role from `SentinelRoleLevel`. The import identity is raised to Microsoft Sentinel
+  Contributor only while `EnableIoCEnrichment` is true, because writing bookmarks needs it.
+
+One deployment installs all of the above; the templates under `Playbooks/` exist only for
+environments that deploy the pieces separately and offer nothing extra.
 
 ## Key Features
 

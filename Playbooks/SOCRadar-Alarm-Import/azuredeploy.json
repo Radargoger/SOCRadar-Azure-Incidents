@@ -184,7 +184,7 @@
                                 "method": "GET",
                                 "uri": "[concat('https://management.azure.com/subscriptions/', subscription().subscriptionId, '/resourceGroups/', parameters('WorkspaceResourceGroup'), '/providers/Microsoft.OperationalInsights/workspaces/', parameters('WorkspaceName'), '/providers/Microsoft.SecurityInsights/incidents?api-version=2023-11-01&$top=1&$orderby=properties/createdTimeUtc%20desc&$filter=startswith(properties/title, ''[SOCRadar]'')')]",
                                 "authentication": { "type": "ManagedServiceIdentity" },
-                                "retryPolicy": { "type": "exponential", "count": 4, "interval": "PT10S", "maximumInterval": "PT1H" }
+                                "retryPolicy": { "type": "exponential", "count": 4, "interval": "PT10S", "maximumInterval": "PT1M" }
                             },
                             "runAfter": {}
                         },
@@ -235,8 +235,8 @@
                             "type": "Until",
                             "expression": "@greater(variables('page'), variables('total_pages'))",
                             "limit": {
-                                "count": 1000,
-                                "timeout": "PT1H"
+                                "count": 50,
+                                "timeout": "PT10M"
                             },
                             "actions": {
                                 "Get_SOCRadar_Page": {
@@ -251,7 +251,7 @@
                                             "start_date": "@{outputs('Calculate_Epoch_Start')}",
                                             "include_total_records": "true"
                                         },
-                                        "retryPolicy": { "type": "exponential", "count": 4, "interval": "PT10S", "maximumInterval": "PT1H" }
+                                        "retryPolicy": { "type": "exponential", "count": 4, "interval": "PT10S", "maximumInterval": "PT1M" }
                                     },
                                     "runtimeConfiguration": { "secureData": { "properties": ["inputs"] } },
                                     "runAfter": {}
@@ -331,7 +331,7 @@
                         "Pagination_Loop_Incidents": {
                             "type": "Until",
                             "expression": "@equals(variables('incidents_next_link'), '')",
-                            "limit": { "count": 100, "timeout": "PT1H" },
+                            "limit": { "count": 100, "timeout": "PT10M" },
                             "actions": {
                                 "Query_Incidents_Page": {
                                     "type": "Http",
@@ -339,7 +339,7 @@
                                         "method": "GET",
                                         "uri": "@variables('incidents_next_link')",
                                         "authentication": { "type": "ManagedServiceIdentity" },
-                                        "retryPolicy": { "type": "exponential", "count": 4, "interval": "PT10S", "maximumInterval": "PT1H" }
+                                        "retryPolicy": { "type": "exponential", "count": 4, "interval": "PT10S", "maximumInterval": "PT1M" }
                                     },
                                     "runAfter": {}
                                 },

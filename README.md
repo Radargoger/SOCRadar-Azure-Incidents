@@ -126,6 +126,10 @@ The separate playbook templates do not include IoC entity enrichment, and they e
 infrastructure templates to be deployed first. Prefer the one-click template unless you have
 a reason to split the deployment.
 
+These standalone templates duplicate logic that also lives in `azuredeploy.json`, so they can
+fall behind it. `tools/check_template_drift.py` compares the expressions that carry the
+behaviour and fails when the two copies stop matching; it runs on every push and pull request.
+
 When deploying the import playbook separately, pass the data collection rule resource IDs from
 the infrastructure template outputs: `alarmsDcrId` into `AlarmsDcrResourceId` and `dcrId` into
 `AuditDcrResourceId`. The template uses them to grant the playbook identity **Monitoring Metrics

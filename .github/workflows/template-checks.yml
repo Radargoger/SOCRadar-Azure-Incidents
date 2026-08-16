@@ -1,0 +1,72 @@
+name: Template checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Every template parses as JSON
+        run: |
+          set -e
+          count=0
+          for f in azuredeploy.json Playbooks/*/azuredeploy.json; do
+            python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$f"
+            echo "  ok: $f"
+            count=$((count + 1))
+          done
+          echo "checked $count template(s)"
+          # Guard against a silent pass when the glob matches nothing.
+          if [ "$count" -lt 6 ]; then
+            echo "expected at least 6 templates, found $count"
+            exit 1
+          fi
+
+      - name: Standalone templates match the one-click template
+        run: python3 tools/check_template_drift.py
+
+      - name: No secrets in tracked files
+        run: |
+          set -e
+          # Calibrate first: a scan that cannot see a planted probe proves nothing.
+          # The probe strings are assembled at run time so this file does not trip its own scan.
+          printf 'api_key = "sk-%s"\nAKIA%s\n' "CALIBRATION0123456789012" "0000CALIBRATION1" > .calibration-probe
+          if ! grep -rIE 'sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}' . --exclude-dir=.git >/dev/null; then
+            echo "scan is blind - it cannot see the calibration probe"
+            rm -f .calibration-probe
+            exit 1
+          fi
+          rm -f .calibration-probe
+          echo "  calibration ok"
+          if grep -rIE 'sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|-----BEGIN [A-Z ]*PRIVATE KEY-----' . --exclude-dir=.git; then
+            echo "secret pattern found in tracked content"
+            exit 1
+          fi
+          echo "  no secret patterns"
+
+      - name: Tracked files are ASCII only
+        run: |
+          python3 - <<'PY'
+          import subprocess, sys
+          files = subprocess.run(["git", "ls-files"], capture_output=True, text=True).stdout.split()
+          bad = []
+          for name in files:
+              try:
+                  data = open(name, "rb").read()
+              except IsADirectoryError:
+                  continue
+              count = sum(1 for byte in data if byte > 127)
+              if count:
+                  bad.append((name, count))
+          if bad:
+              for name, count in bad:
+                  print(f"  {name}: {count} non-ascii byte(s)")
+              sys.exit(1)
+          print(f"  {len(files)} tracked file(s), all ascii")
+          PY

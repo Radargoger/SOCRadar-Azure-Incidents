@@ -12,7 +12,7 @@
         "PlaybookName": {
             "type": "string",
             "defaultValue": "SOCRadar-Alarm-Sync",
-            "metadata": { "description": "Name of the Logic App" }
+            "metadata": { "description": "NOT RECOMMENDED: deploy azuredeploy.json from the repository root instead, which installs this playbook with the rest of the integration. --- Name of the Logic App" }
         },
         "SocradarApiKey": {
             "type": "securestring",

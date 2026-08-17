@@ -150,6 +150,33 @@ These standalone templates duplicate logic that also lives in `azuredeploy.json`
 fall behind it. `tools/check_template_drift.py` compares the expressions that carry the
 behaviour and fails when the two copies stop matching; it runs on every push and pull request.
 
+### If you still deploy them
+
+The "not recommended" notice is repeated in each template's `metadata.description` and on its
+first parameter, so it is visible whether you deploy from the Azure Portal (Deploy a custom
+template) or from a pipeline.
+
+Deploy the infrastructure templates first, then the playbooks, and pass the data collection
+rule resource IDs from the infrastructure outputs into the import playbook:
+
+```bash
+az deployment group create -g <resource-group> \
+  --template-file Playbooks/SOCRadar-Alarms-Infrastructure/azuredeploy.json \
+  --parameters WorkspaceName=<workspace> WorkspaceLocation=<region>
+# take alarmsDcrId, alarmsDcrImmutableId and dceEndpoint from the deployment outputs
+
+az deployment group create -g <resource-group> \
+  --template-file Playbooks/SOCRadar-Alarm-Import/azuredeploy.json \
+  --parameters WorkspaceName=<workspace> SocradarApiKey=<key> CompanyId=<id> \
+               EnableAlarmsTable=true DceEndpoint=<dceEndpoint> \
+               AlarmsDcrImmutableId=<alarmsDcrImmutableId> \
+               AlarmsDcrResourceId=<alarmsDcrId>
+```
+
+Leaving `AlarmsDcrResourceId` or `AuditDcrResourceId` empty is the mistake to avoid: the
+deployment succeeds, the playbook runs, and every ingestion call returns 403 while the custom
+tables stay empty. The one-click template cannot hit this because it creates the rules itself.
+
 When deploying the import playbook separately, pass the data collection rule resource IDs from
 the infrastructure template outputs: `alarmsDcrId` into `AlarmsDcrResourceId` and `dcrId` into
 `AuditDcrResourceId`. The template uses them to grant the playbook identity **Monitoring Metrics

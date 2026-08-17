@@ -12,7 +12,7 @@
         "PlaybookName": {
             "type": "string",
             "defaultValue": "SOCRadar-Alarm-Import",
-            "metadata": { "description": "Name of the Logic App" }
+            "metadata": { "description": "NOT RECOMMENDED: this standalone template has no IoC entity enrichment. Deploy azuredeploy.json from the repository root instead. --- Name of the Logic App" }
         },
         "SocradarApiKey": {
             "type": "securestring",

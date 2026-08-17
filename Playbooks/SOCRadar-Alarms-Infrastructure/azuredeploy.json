@@ -11,7 +11,7 @@
     "parameters": {
         "WorkspaceName": {
             "type": "string",
-            "metadata": { "description": "Microsoft Sentinel Log Analytics Workspace Name" }
+            "metadata": { "description": "NOT RECOMMENDED: deploy azuredeploy.json from the repository root instead, which creates this infrastructure and grants the playbook the permissions it needs. --- Microsoft Sentinel Log Analytics Workspace Name" }
         },
         "WorkspaceLocation": {
             "type": "string",

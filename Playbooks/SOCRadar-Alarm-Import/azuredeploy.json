@@ -3,7 +3,7 @@
     "contentVersion": "1.0.0",
     "metadata": {
         "title": "SOCRadar-Alarm-Import",
-        "description": "Imports alarms from SOCRadar with optional audit logging and custom table storage. Supports all statuses or OPEN only.",
+        "description": "NOT RECOMMENDED - deploy azuredeploy.json in the repository root instead. This standalone template has no IoC entity enrichment, and if you enable the custom tables without passing the data collection rule resource IDs it deploys successfully but every ingestion call returns 403. Imports alarms from SOCRadar with optional audit logging and custom table storage. Supports all statuses or OPEN only.",
         "version": "1.0.0",
         "author": "SOCRadar",
         "lastUpdateTime": "2026-02-06T00:00:00.000Z"

@@ -117,10 +117,22 @@ The default is **Responder**, following the least-privilege principle. If your o
 Note that `SentinelRoleLevel` does not apply to the import playbook while `EnableIoCEnrichment` is
 true, because bookmark write is outside the Responder role. See [IoC Entity Enrichment](#ioc-entity-enrichment).
 
-## Deploying Playbooks Separately
+## Deploying Playbooks Separately (not recommended)
 
-The one-click template above installs everything. The `Playbooks/` folder holds the same
-components as separate templates for environments that deploy them individually:
+> **Use the one-click template above.** The templates under `Playbooks/` are kept for existing
+> deployments and are **not recommended for new installations**, for two reasons:
+>
+> - They have **no IoC entity enrichment**, so incidents arrive with an empty Entities tab.
+> - If you enable the custom tables but leave `AlarmsDcrResourceId` / `AuditDcrResourceId`
+>   empty, the deployment still succeeds while **every ingestion call returns 403** and the
+>   tables stay silently empty.
+>
+> The one-click template has neither problem: it creates the data collection rules itself and
+> grants the permissions automatically. It offers everything these templates offer and more -
+> verified by comparing them action by action.
+
+The `Playbooks/` folder holds the same components as separate templates for environments that
+deploy them individually:
 
 | Folder | Contents |
 |--------|----------|

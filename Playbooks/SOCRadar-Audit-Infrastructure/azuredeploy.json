@@ -3,7 +3,7 @@
     "contentVersion": "1.0.0",
     "metadata": {
         "title": "SOCRadar-Audit-Infrastructure",
-        "description": "Creates Log Analytics custom table and Data Collection Rule for SOCRadar audit logging",
+        "description": "NOT RECOMMENDED - deploy azuredeploy.json in the repository root instead, which creates this infrastructure and wires the playbook permissions to it. Creates Log Analytics custom table and Data Collection Rule for SOCRadar audit logging",
         "version": "1.0.0",
         "author": "SOCRadar",
         "lastUpdateTime": "2026-02-01T00:00:00.000Z"

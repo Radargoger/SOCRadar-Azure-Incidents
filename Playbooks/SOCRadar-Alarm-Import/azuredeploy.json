@@ -70,6 +70,13 @@
             "defaultValue": false,
             "metadata": { "description": "Enable writing alarms to custom Log Analytics table (SOCRadar_Alarms_CL)" }
         },
+        "EnableIoCEnrichment": {
+            "type": "bool",
+            "defaultValue": true,
+            "metadata": {
+                "description": "Extract IP, domain and URL indicators from alarm details and attach them to the incident as entities. Requires Microsoft Sentinel Contributor for the import playbook because bookmark write is not included in Responder. When false, the import identity keeps the SentinelRoleLevel role."
+            }
+        },
         "DceEndpoint": {
             "type": "string",
             "defaultValue": "",
@@ -115,6 +122,7 @@
         "workspaceResourceId": "[resourceId(parameters('WorkspaceResourceGroup'), 'Microsoft.OperationalInsights/workspaces', parameters('WorkspaceName'))]",
         "isExternalWorkspace": "[not(equals(parameters('WorkspaceResourceGroup'), resourceGroup().name))]",
         "LogAnalyticsReaderRoleId": "73c42c96-874c-492b-b04d-ab87d138a893",
+        "importSentinelRoleDefinitionId": "[if(parameters('EnableIoCEnrichment'), variables('SentinelContributorRoleId'), variables('sentinelRoleDefinitionId'))]",
         "MonitoringMetricsPublisherRoleId": "3913510d-42f4-4e42-8a64-420c390055eb",
         "AuditStreamName": "Custom-SOCRadarAuditLog_CL"
     },
@@ -164,7 +172,9 @@
                         "AlarmsDcrImmutableId": { "type": "String", "defaultValue": "" },
                         "AlarmsStreamName": { "type": "String", "defaultValue": "Custom-SOCRadar_Alarms_CL" },
                         "SubscriptionId": { "type": "String" },
-                        "ResourceGroupName": { "type": "String" }
+                        "ResourceGroupName": { "type": "String" },
+                        "WorkspaceId": { "type": "String" },
+                        "EnableIoCEnrichment": { "type": "Bool" }
                     },
                     "triggers": {
                         "Recurrence": {
@@ -375,6 +385,300 @@
                             },
                             "runAfter": { "Pagination_Loop_Incidents": ["Succeeded"] }
                         },
+                        "Filter_Incidents_Missing_Entities": {
+                            "type": "Query",
+                            "runAfter": {
+                                "Extract_Existing_IDs": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "inputs": {
+                                "from": "@variables('existing_incidents')",
+                                "where": "@and(equals(parameters('EnableIoCEnrichment'), true), and(equals(coalesce(item()?['properties']?['additionalData']?['bookmarksCount'], 0), 0), contains(coalesce(item()?['properties']?['title'], ''), '#')))"
+                            }
+                        },
+                        "Backfill_Missing_Entities": {
+                            "type": "Scope",
+                            "runAfter": {
+                                "Filter_Incidents_Missing_Entities": [
+                                    "Succeeded"
+                                ],
+                                "For_Each_Alarm": [
+                                    "Succeeded",
+                                    "Failed",
+                                    "Skipped"
+                                ]
+                            },
+                            "actions": {
+                                "For_Each_Missing_Entity": {
+                                    "type": "Foreach",
+                                    "foreach": "@take(body('Filter_Incidents_Missing_Entities'), 60)",
+                                    "runtimeConfiguration": {
+                                        "concurrency": {
+                                            "repetitions": 5
+                                        }
+                                    },
+                                    "runAfter": {},
+                                    "actions": {
+                                        "Extract_Backfill_Alarm_Id": {
+                                            "type": "Compose",
+                                            "runAfter": {},
+                                            "inputs": "@first(split(last(split(coalesce(items('For_Each_Missing_Entity')?['properties']?['title'], ''), '#')), ' '))"
+                                        },
+                                        "Fetch_Backfill_Alarm": {
+                                            "type": "Http",
+                                            "runAfter": {
+                                                "Extract_Backfill_Alarm_Id": [
+                                                    "Succeeded"
+                                                ]
+                                            },
+                                            "inputs": {
+                                                "method": "GET",
+                                                "uri": "https://platform.socradar.com/api/company/@{parameters('CompanyId')}/incidents/v4",
+                                                "headers": {
+                                                    "API-Key": "@{parameters('SocradarApiKey')}"
+                                                },
+                                                "queries": {
+                                                    "alarm_ids": "@{outputs('Extract_Backfill_Alarm_Id')}"
+                                                },
+                                                "retryPolicy": {
+                                                    "type": "exponential",
+                                                    "count": 3,
+                                                    "interval": "PT10S"
+                                                }
+                                            },
+                                            "runtimeConfiguration": {
+                                                "secureData": {
+                                                    "properties": [
+                                                        "inputs"
+                                                    ]
+                                                }
+                                            }
+                                        },
+                                        "BF_Compose_IoC_Source": {
+                                            "type": "Compose",
+                                            "runAfter": {
+                                                "Fetch_Backfill_Alarm": [
+                                                    "Succeeded"
+                                                ]
+                                            },
+                                            "inputs": "@replace(replace(replace(replace(concat(coalesce(first(coalesce(body('Fetch_Backfill_Alarm')?['data'], json('[]')))?['alarm_text'], ''), ' ', string(coalesce(first(coalesce(body('Fetch_Backfill_Alarm')?['data'], json('[]')))?['content'], ''))), '[.]', '.'), '(.)', '.'), 'hxxps://', 'https://'), 'hxxp://', 'http://')"
+                                        },
+                                        "BF_Run_IoC_Regex_Query": {
+                                            "type": "Http",
+                                            "runAfter": {
+                                                "BF_Compose_IoC_Source": [
+                                                    "Succeeded"
+                                                ]
+                                            },
+                                            "inputs": {
+                                                "method": "POST",
+                                                "uri": "https://api.loganalytics.io/v1/workspaces/@{parameters('WorkspaceId')}/query",
+                                                "headers": {
+                                                    "Content-Type": "application/json"
+                                                },
+                                                "authentication": {
+                                                    "type": "ManagedServiceIdentity",
+                                                    "audience": "https://api.loganalytics.io"
+                                                },
+                                                "body": {
+                                                    "query": "print raw = base64_decode_tostring('@{base64(outputs('BF_Compose_IoC_Source'))}') | extend Urls0 = extract_all(@'(https?://[^\\s\"<>\\]\\)},;\\\\]+)', raw) | extend nourl = replace_regex(raw, @'https?://[^\\s\"<>\\]\\)},;]+', ' ') | extend Ips0 = extract_all(@'\\b((?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(?:\\.(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3})\\b', nourl) | extend Doms0 = extract_all(@'\\b((?:[a-z0-9][a-z0-9-]{0,62}\\.)+(?:[a-z]{2}|com|net|org|info|biz|edu|gov|mil|int|app|dev|cloud|online|site|shop|club|live|link|xyz|top|icu|buzz|tech|store|space|website|host|press|digital|agency|solutions|services|systems|network|email|group|world|life|today|news|media|works|zone|center|company|expert|tools|support|care|best|run|click|download|stream|review|date|loan|men|win|bid|trade|party|science|work|wiki|fun|rest|quest|monster|cyou|sbs|lol|help|pro|name|mobi|asia|tel|travel|jobs|museum|aero|coop|cat|post|blog|page|ninja|guru|team|design|studio|software|finance|capital|fund|bank|insure|legal|clinic|health|dental|vision|coach|academy|school|college|university|institute))\\b', tolower(nourl)) | mv-expand D = iff(array_length(Doms0) == 0, dynamic(['']), Doms0) to typeof(string) | where isempty(D) or (D != 'socradar.com' and D !endswith '.socradar.com' and not(D matches regex @'\\.(png|jpe?g|gif|svg|ico|css|js|txt|json|xml|csv|pdf|docx?|xlsx?|pptx?|exe|dll)$')) | summarize Ips0 = take_any(Ips0), Urls0 = take_any(Urls0), Doms = make_set_if(D, isnotempty(D)) | mv-expand U = iff(array_length(Urls0) == 0, dynamic(['']), Urls0) to typeof(string) | extend U = trim_end(@'[.,;:!?\\\\]+', U) | summarize Ips0 = take_any(Ips0), Doms = take_any(Doms), Urls = make_set_if(U, isnotempty(U)) | project Ips = array_sort_asc(set_union(Ips0, dynamic([]))), Domains = array_sort_asc(set_union(Doms, dynamic([]))), Urls = array_sort_asc(set_union(Urls, dynamic([])))"
+                                                },
+                                                "retryPolicy": {
+                                                    "type": "exponential",
+                                                    "count": 3,
+                                                    "interval": "PT10S"
+                                                }
+                                            }
+                                        },
+                                        "BF_Parse_IoC_Arrays": {
+                                            "type": "Compose",
+                                            "runAfter": {
+                                                "BF_Run_IoC_Regex_Query": [
+                                                    "Succeeded"
+                                                ]
+                                            },
+                                            "inputs": {
+                                                "ips": "@json(string(body('BF_Run_IoC_Regex_Query')['tables'][0]['rows'][0][0]))",
+                                                "domains": "@json(string(body('BF_Run_IoC_Regex_Query')['tables'][0]['rows'][0][1]))",
+                                                "urls": "@json(string(body('BF_Run_IoC_Regex_Query')['tables'][0]['rows'][0][2]))"
+                                            }
+                                        },
+                                        "BF_Map_IP_Entities": {
+                                            "type": "Select",
+                                            "runAfter": {
+                                                "BF_Parse_IoC_Arrays": [
+                                                    "Succeeded"
+                                                ]
+                                            },
+                                            "inputs": {
+                                                "from": "@outputs('BF_Parse_IoC_Arrays')['ips']",
+                                                "select": {
+                                                    "entityType": "IP",
+                                                    "fieldMappings": [
+                                                        {
+                                                            "identifier": "Address",
+                                                            "value": "@{item()}"
+                                                        }
+                                                    ]
+                                                }
+                                            }
+                                        },
+                                        "BF_Map_Domain_Entities": {
+                                            "type": "Select",
+                                            "runAfter": {
+                                                "BF_Map_IP_Entities": [
+                                                    "Succeeded"
+                                                ]
+                                            },
+                                            "inputs": {
+                                                "from": "@outputs('BF_Parse_IoC_Arrays')['domains']",
+                                                "select": {
+                                                    "entityType": "DNS",
+                                                    "fieldMappings": [
+                                                        {
+                                                            "identifier": "DomainName",
+                                                            "value": "@{item()}"
+                                                        }
+                                                    ]
+                                                }
+                                            }
+                                        },
+                                        "BF_Map_URL_Entities": {
+                                            "type": "Select",
+                                            "runAfter": {
+                                                "BF_Map_Domain_Entities": [
+                                                    "Succeeded"
+                                                ]
+                                            },
+                                            "inputs": {
+                                                "from": "@outputs('BF_Parse_IoC_Arrays')['urls']",
+                                                "select": {
+                                                    "entityType": "URL",
+                                                    "fieldMappings": [
+                                                        {
+                                                            "identifier": "Url",
+                                                            "value": "@{item()}"
+                                                        }
+                                                    ]
+                                                }
+                                            }
+                                        },
+                                        "BF_Combine_Entity_Mappings": {
+                                            "type": "Compose",
+                                            "runAfter": {
+                                                "BF_Map_URL_Entities": [
+                                                    "Succeeded"
+                                                ]
+                                            },
+                                            "inputs": "@take(union(body('BF_Map_IP_Entities'), body('BF_Map_Domain_Entities'), body('BF_Map_URL_Entities')), 100)"
+                                        },
+                                        "BF_Check_Has_Entities": {
+                                            "type": "If",
+                                            "runAfter": {
+                                                "BF_Combine_Entity_Mappings": [
+                                                    "Succeeded"
+                                                ]
+                                            },
+                                            "expression": {
+                                                "and": [
+                                                    {
+                                                        "greater": [
+                                                            "@length(outputs('BF_Combine_Entity_Mappings'))",
+                                                            0
+                                                        ]
+                                                    },
+                                                    {
+                                                        "equals": [
+                                                            "@parameters('EnableIoCEnrichment')",
+                                                            true
+                                                        ]
+                                                    }
+                                                ]
+                                            },
+                                            "actions": {
+                                                "BF_Create_IoC_Bookmark": {
+                                                    "type": "Http",
+                                                    "runAfter": {},
+                                                    "inputs": {
+                                                        "method": "PUT",
+                                                        "uri": "https://management.azure.com/subscriptions/@{parameters('SubscriptionId')}/resourceGroups/@{parameters('ResourceGroupName')}/providers/Microsoft.OperationalInsights/workspaces/@{parameters('WorkspaceName')}/providers/Microsoft.SecurityInsights/bookmarks/50c8ada7-0000-4000-8000-@{substring(concat('000000000000', outputs('Extract_Backfill_Alarm_Id')), length(outputs('Extract_Backfill_Alarm_Id')), 12)}?api-version=2024-10-01-preview",
+                                                        "headers": {
+                                                            "Content-Type": "application/json"
+                                                        },
+                                                        "authentication": {
+                                                            "type": "ManagedServiceIdentity",
+                                                            "audience": "https://management.azure.com"
+                                                        },
+                                                        "body": {
+                                                            "properties": {
+                                                                "displayName": "SOCRadar #@{outputs('Extract_Backfill_Alarm_Id')} - Extracted IoC Entities",
+                                                                "query": "print AlarmId = '@{outputs('Extract_Backfill_Alarm_Id')}'",
+                                                                "labels": [
+                                                                    "SOCRadar",
+                                                                    "Auto-IoC"
+                                                                ],
+                                                                "notes": "IP / Domain / URL indicators automatically extracted (regex) from SOCRadar alarm Details and Content fields. Hashes intentionally excluded.",
+                                                                "eventTime": "@{utcNow()}",
+                                                                "entityMappings": "@outputs('BF_Combine_Entity_Mappings')"
+                                                            }
+                                                        },
+                                                        "retryPolicy": {
+                                                            "type": "exponential",
+                                                            "count": 3,
+                                                            "interval": "PT10S"
+                                                        }
+                                                    }
+                                                },
+                                                "BF_Relate_Bookmark_To_Incident": {
+                                                    "type": "Http",
+                                                    "runAfter": {
+                                                        "BF_Create_IoC_Bookmark": [
+                                                            "Succeeded"
+                                                        ]
+                                                    },
+                                                    "inputs": {
+                                                        "method": "PUT",
+                                                        "uri": "https://management.azure.com@{items('For_Each_Missing_Entity')?['id']}/relations/50c8ada7-0000-4000-9000-@{substring(concat('000000000000', outputs('Extract_Backfill_Alarm_Id')), length(outputs('Extract_Backfill_Alarm_Id')), 12)}?api-version=2023-11-01",
+                                                        "headers": {
+                                                            "Content-Type": "application/json"
+                                                        },
+                                                        "authentication": {
+                                                            "type": "ManagedServiceIdentity",
+                                                            "audience": "https://management.azure.com"
+                                                        },
+                                                        "body": {
+                                                            "properties": {
+                                                                "relatedResourceId": "@{body('BF_Create_IoC_Bookmark')?['id']}"
+                                                            }
+                                                        },
+                                                        "retryPolicy": {
+                                                            "type": "exponential",
+                                                            "count": 3,
+                                                            "interval": "PT10S"
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            "else": {
+                                                "actions": {}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "Backfill_Status": {
+                            "type": "Compose",
+                            "runAfter": {
+                                "Backfill_Missing_Entities": [
+                                    "Succeeded",
+                                    "Failed",
+                                    "Skipped"
+                                ]
+                            },
+                            "inputs": "@concat('backfill candidates: ', string(length(coalesce(body('Filter_Incidents_Missing_Entities'), json('[]')))))"
+                        },
                         "For_Each_Alarm": {
                             "type": "Foreach",
                             "foreach": "@variables('all_alarms')",
@@ -421,6 +725,359 @@
                                                                     }
                                                                 },
                                                                 "runAfter": {}
+                                                            },
+                                                            "Enrich_Incident_Entities": {
+                                                                "type": "Scope",
+                                                                "runAfter": {
+                                                                    "Create_New_Incident": [
+                                                                        "Succeeded"
+                                                                    ]
+                                                                },
+                                                                "actions": {
+                                                                    "Compose_IoC_Source": {
+                                                                        "type": "Compose",
+                                                                        "runAfter": {},
+                                                                        "inputs": "@replace(replace(replace(replace(concat(coalesce(items('For_Each_Alarm')?['alarm_text'], ''), ' ', string(coalesce(items('For_Each_Alarm')?['content'], ''))), '[.]', '.'), '(.)', '.'), 'hxxps://', 'https://'), 'hxxp://', 'http://')"
+                                                                    },
+                                                                    "Run_IoC_Regex_Query": {
+                                                                        "type": "Http",
+                                                                        "runAfter": {
+                                                                            "Compose_IoC_Source": [
+                                                                                "Succeeded"
+                                                                            ]
+                                                                        },
+                                                                        "inputs": {
+                                                                            "method": "POST",
+                                                                            "uri": "https://api.loganalytics.io/v1/workspaces/@{parameters('WorkspaceId')}/query",
+                                                                            "headers": {
+                                                                                "Content-Type": "application/json"
+                                                                            },
+                                                                            "authentication": {
+                                                                                "type": "ManagedServiceIdentity",
+                                                                                "audience": "https://api.loganalytics.io"
+                                                                            },
+                                                                            "body": {
+                                                                                "query": "print raw = base64_decode_tostring('@{base64(outputs('Compose_IoC_Source'))}') | extend Urls0 = extract_all(@'(https?://[^\\s\"<>\\]\\)},;\\\\]+)', raw) | extend nourl = replace_regex(raw, @'https?://[^\\s\"<>\\]\\)},;]+', ' ') | extend Ips0 = extract_all(@'\\b((?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(?:\\.(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3})\\b', nourl) | extend Doms0 = extract_all(@'\\b((?:[a-z0-9][a-z0-9-]{0,62}\\.)+(?:[a-z]{2}|com|net|org|info|biz|edu|gov|mil|int|app|dev|cloud|online|site|shop|club|live|link|xyz|top|icu|buzz|tech|store|space|website|host|press|digital|agency|solutions|services|systems|network|email|group|world|life|today|news|media|works|zone|center|company|expert|tools|support|care|best|run|click|download|stream|review|date|loan|men|win|bid|trade|party|science|work|wiki|fun|rest|quest|monster|cyou|sbs|lol|help|pro|name|mobi|asia|tel|travel|jobs|museum|aero|coop|cat|post|blog|page|ninja|guru|team|design|studio|software|finance|capital|fund|bank|insure|legal|clinic|health|dental|vision|coach|academy|school|college|university|institute))\\b', tolower(nourl)) | mv-expand D = iff(array_length(Doms0) == 0, dynamic(['']), Doms0) to typeof(string) | where isempty(D) or (D != 'socradar.com' and D !endswith '.socradar.com' and not(D matches regex @'\\.(png|jpe?g|gif|svg|ico|css|js|txt|json|xml|csv|pdf|docx?|xlsx?|pptx?|exe|dll)$')) | summarize Ips0 = take_any(Ips0), Urls0 = take_any(Urls0), Doms = make_set_if(D, isnotempty(D)) | mv-expand U = iff(array_length(Urls0) == 0, dynamic(['']), Urls0) to typeof(string) | extend U = trim_end(@'[.,;:!?\\\\]+', U) | summarize Ips0 = take_any(Ips0), Doms = take_any(Doms), Urls = make_set_if(U, isnotempty(U)) | project Ips = array_sort_asc(set_union(Ips0, dynamic([]))), Domains = array_sort_asc(set_union(Doms, dynamic([]))), Urls = array_sort_asc(set_union(Urls, dynamic([])))"
+                                                                            },
+                                                                            "retryPolicy": {
+                                                                                "type": "exponential",
+                                                                                "count": 3,
+                                                                                "interval": "PT10S"
+                                                                            }
+                                                                        }
+                                                                    },
+                                                                    "Parse_IoC_Arrays": {
+                                                                        "type": "Compose",
+                                                                        "runAfter": {
+                                                                            "Run_IoC_Regex_Query": [
+                                                                                "Succeeded"
+                                                                            ]
+                                                                        },
+                                                                        "inputs": {
+                                                                            "ips": "@json(string(body('Run_IoC_Regex_Query')['tables'][0]['rows'][0][0]))",
+                                                                            "domains": "@json(string(body('Run_IoC_Regex_Query')['tables'][0]['rows'][0][1]))",
+                                                                            "urls": "@json(string(body('Run_IoC_Regex_Query')['tables'][0]['rows'][0][2]))"
+                                                                        }
+                                                                    },
+                                                                    "Map_IP_Entities": {
+                                                                        "type": "Select",
+                                                                        "runAfter": {
+                                                                            "Parse_IoC_Arrays": [
+                                                                                "Succeeded"
+                                                                            ]
+                                                                        },
+                                                                        "inputs": {
+                                                                            "from": "@outputs('Parse_IoC_Arrays')['ips']",
+                                                                            "select": {
+                                                                                "entityType": "IP",
+                                                                                "fieldMappings": [
+                                                                                    {
+                                                                                        "identifier": "Address",
+                                                                                        "value": "@{item()}"
+                                                                                    }
+                                                                                ]
+                                                                            }
+                                                                        }
+                                                                    },
+                                                                    "Map_Domain_Entities": {
+                                                                        "type": "Select",
+                                                                        "runAfter": {
+                                                                            "Map_IP_Entities": [
+                                                                                "Succeeded"
+                                                                            ]
+                                                                        },
+                                                                        "inputs": {
+                                                                            "from": "@outputs('Parse_IoC_Arrays')['domains']",
+                                                                            "select": {
+                                                                                "entityType": "DNS",
+                                                                                "fieldMappings": [
+                                                                                    {
+                                                                                        "identifier": "DomainName",
+                                                                                        "value": "@{item()}"
+                                                                                    }
+                                                                                ]
+                                                                            }
+                                                                        }
+                                                                    },
+                                                                    "Map_URL_Entities": {
+                                                                        "type": "Select",
+                                                                        "runAfter": {
+                                                                            "Map_Domain_Entities": [
+                                                                                "Succeeded"
+                                                                            ]
+                                                                        },
+                                                                        "inputs": {
+                                                                            "from": "@outputs('Parse_IoC_Arrays')['urls']",
+                                                                            "select": {
+                                                                                "entityType": "URL",
+                                                                                "fieldMappings": [
+                                                                                    {
+                                                                                        "identifier": "Url",
+                                                                                        "value": "@{item()}"
+                                                                                    }
+                                                                                ]
+                                                                            }
+                                                                        }
+                                                                    },
+                                                                    "Combine_Entity_Mappings": {
+                                                                        "type": "Compose",
+                                                                        "runAfter": {
+                                                                            "Map_URL_Entities": [
+                                                                                "Succeeded"
+                                                                            ]
+                                                                        },
+                                                                        "inputs": "@take(union(body('Map_IP_Entities'), body('Map_Domain_Entities'), body('Map_URL_Entities')), 100)"
+                                                                    },
+                                                                    "Check_Has_Entities": {
+                                                                        "type": "If",
+                                                                        "runAfter": {
+                                                                            "Combine_Entity_Mappings": [
+                                                                                "Succeeded"
+                                                                            ]
+                                                                        },
+                                                                        "expression": {
+                                                                            "and": [
+                                                                                {
+                                                                                    "greater": [
+                                                                                        "@length(outputs('Combine_Entity_Mappings'))",
+                                                                                        0
+                                                                                    ]
+                                                                                },
+                                                                                {
+                                                                                    "equals": [
+                                                                                        "@parameters('EnableIoCEnrichment')",
+                                                                                        true
+                                                                                    ]
+                                                                                }
+                                                                            ]
+                                                                        },
+                                                                        "actions": {
+                                                                            "Create_IoC_Bookmark": {
+                                                                                "type": "Http",
+                                                                                "runAfter": {},
+                                                                                "inputs": {
+                                                                                    "method": "PUT",
+                                                                                    "uri": "https://management.azure.com/subscriptions/@{parameters('SubscriptionId')}/resourceGroups/@{parameters('ResourceGroupName')}/providers/Microsoft.OperationalInsights/workspaces/@{parameters('WorkspaceName')}/providers/Microsoft.SecurityInsights/bookmarks/@{guid()}?api-version=2024-10-01-preview",
+                                                                                    "headers": {
+                                                                                        "Content-Type": "application/json"
+                                                                                    },
+                                                                                    "authentication": {
+                                                                                        "type": "ManagedServiceIdentity",
+                                                                                        "audience": "https://management.azure.com"
+                                                                                    },
+                                                                                    "body": {
+                                                                                        "properties": {
+                                                                                            "displayName": "SOCRadar #@{items('For_Each_Alarm')?['alarm_id']} - Extracted IoC Entities",
+                                                                                            "query": "print AlarmId = '@{items('For_Each_Alarm')?['alarm_id']}'",
+                                                                                            "labels": [
+                                                                                                "SOCRadar",
+                                                                                                "Auto-IoC"
+                                                                                            ],
+                                                                                            "notes": "IP / Domain / URL indicators automatically extracted (regex) from SOCRadar alarm Details and Content fields. Hashes intentionally excluded.",
+                                                                                            "eventTime": "@{utcNow()}",
+                                                                                            "entityMappings": "@outputs('Combine_Entity_Mappings')"
+                                                                                        }
+                                                                                    },
+                                                                                    "retryPolicy": {
+                                                                                        "type": "exponential",
+                                                                                        "count": 3,
+                                                                                        "interval": "PT10S"
+                                                                                    }
+                                                                                }
+                                                                            },
+                                                                            "Relate_Bookmark_To_Incident": {
+                                                                                "type": "Http",
+                                                                                "runAfter": {
+                                                                                    "Create_IoC_Bookmark": [
+                                                                                        "Succeeded"
+                                                                                    ]
+                                                                                },
+                                                                                "inputs": {
+                                                                                    "method": "PUT",
+                                                                                    "uri": "https://management.azure.com@{body('Create_New_Incident')?['id']}/relations/@{guid()}?api-version=2023-11-01",
+                                                                                    "headers": {
+                                                                                        "Content-Type": "application/json"
+                                                                                    },
+                                                                                    "authentication": {
+                                                                                        "type": "ManagedServiceIdentity",
+                                                                                        "audience": "https://management.azure.com"
+                                                                                    },
+                                                                                    "body": {
+                                                                                        "properties": {
+                                                                                            "relatedResourceId": "@{body('Create_IoC_Bookmark')?['id']}"
+                                                                                        }
+                                                                                    },
+                                                                                    "retryPolicy": {
+                                                                                        "type": "exponential",
+                                                                                        "count": 3,
+                                                                                        "interval": "PT10S"
+                                                                                    }
+                                                                                }
+                                                                            },
+                                                                            "Delay_Before_Relation_Retry": {
+                                                                                "type": "Wait",
+                                                                                "runAfter": {
+                                                                                    "Relate_Bookmark_To_Incident": [
+                                                                                        "Failed",
+                                                                                        "TimedOut"
+                                                                                    ]
+                                                                                },
+                                                                                "inputs": {
+                                                                                    "interval": {
+                                                                                        "count": 15,
+                                                                                        "unit": "Second"
+                                                                                    }
+                                                                                }
+                                                                            },
+                                                                            "Relate_Bookmark_Retry": {
+                                                                                "type": "Http",
+                                                                                "runAfter": {
+                                                                                    "Delay_Before_Relation_Retry": [
+                                                                                        "Succeeded"
+                                                                                    ]
+                                                                                },
+                                                                                "inputs": {
+                                                                                    "method": "PUT",
+                                                                                    "uri": "https://management.azure.com@{body('Create_New_Incident')?['id']}/relations/@{guid()}?api-version=2023-11-01",
+                                                                                    "headers": {
+                                                                                        "Content-Type": "application/json"
+                                                                                    },
+                                                                                    "authentication": {
+                                                                                        "type": "ManagedServiceIdentity",
+                                                                                        "audience": "https://management.azure.com"
+                                                                                    },
+                                                                                    "body": {
+                                                                                        "properties": {
+                                                                                            "relatedResourceId": "@{body('Create_IoC_Bookmark')?['id']}"
+                                                                                        }
+                                                                                    },
+                                                                                    "retryPolicy": {
+                                                                                        "type": "exponential",
+                                                                                        "count": 3,
+                                                                                        "interval": "PT10S"
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        },
+                                                                        "else": {
+                                                                            "actions": {}
+                                                                        }
+                                                                    }
+                                                                }
+                                                            },
+                                                            "IoC_Enrichment_Status": {
+                                                                "type": "Compose",
+                                                                "runAfter": {
+                                                                    "Enrich_Incident_Entities": [
+                                                                        "Succeeded",
+                                                                        "Failed",
+                                                                        "Skipped",
+                                                                        "TimedOut"
+                                                                    ]
+                                                                },
+                                                                "inputs": "IoC entity enrichment step finished (see Enrich_Incident_Entities scope for details). Incident creation is never blocked by enrichment errors."
+                                                            },
+                                                            "Filter_Enrichment_Failures": {
+                                                                "type": "Query",
+                                                                "inputs": {
+                                                                    "from": "@result('Enrich_Incident_Entities')",
+                                                                    "where": "@equals(item()?['status'], 'Failed')"
+                                                                },
+                                                                "runAfter": {
+                                                                    "IoC_Enrichment_Status": [
+                                                                        "Succeeded"
+                                                                    ]
+                                                                }
+                                                            },
+                                                            "Select_Enrichment_Errors": {
+                                                                "type": "Select",
+                                                                "inputs": {
+                                                                    "from": "@take(body('Filter_Enrichment_Failures'), 5)",
+                                                                    "select": "@concat(coalesce(item()?['name'], 'unknown action'), ': ', take(coalesce(string(item()?['error']?['message']), coalesce(item()?['code'], 'no detail')), 200))"
+                                                                },
+                                                                "runAfter": {
+                                                                    "Filter_Enrichment_Failures": [
+                                                                        "Succeeded"
+                                                                    ]
+                                                                }
+                                                            },
+"Check_Enrichment_Failed": {
+                                                                "type": "If",
+                                                                "runAfter": {
+                                                                    "Select_Enrichment_Errors": [
+                                                                        "Succeeded"
+                                                                    ]
+                                                                },
+                                                                "expression": {
+                                                                    "and": [
+                                                                        {
+                                                                            "equals": [
+                                                                                "@parameters('EnableAuditLogging')",
+                                                                                true
+                                                                            ]
+                                                                        },
+                                                                        {
+                                                                            "greater": [
+                                                                                "@length(body('Filter_Enrichment_Failures'))",
+                                                                                0
+                                                                            ]
+                                                                        }
+                                                                    ]
+                                                                },
+                                                                "actions": {
+                                                                    "Log_Enrichment_Failure": {
+                                                                        "type": "Http",
+                                                                        "inputs": {
+                                                                            "method": "POST",
+                                                                            "uri": "@{concat(parameters('AuditDcrEndpoint'), '/dataCollectionRules/', parameters('AuditDcrImmutableId'), '/streams/', parameters('AuditStreamName'), '?api-version=2023-01-01')}",
+                                                                            "headers": {
+                                                                                "Content-Type": "application/json"
+                                                                            },
+                                                                            "authentication": {
+                                                                                "type": "ManagedServiceIdentity",
+                                                                                "audience": "https://monitor.azure.com"
+                                                                            },
+                                                                            "body": [
+                                                                                {
+                                                                                    "TimeGenerated": "@{utcNow()}",
+                                                                                    "EventType": "IoCEnrichmentFailed",
+                                                                                    "AlarmId": "@{items('For_Each_Alarm')?['alarm_id']}",
+                                                                                    "IncidentId": "@{coalesce(body('Create_New_Incident')?['name'], '')}",
+                                                                                    "AlarmType": "@{coalesce(items('For_Each_Alarm')?['alarm_type_details']?['alarm_main_type'], 'N/A')}",
+                                                                                    "Status": "@{items('For_Each_Alarm')?['status']}",
+                                                                                    "Severity": "@{items('For_Each_Alarm')?['alarm_risk_level']}",
+                                                                                    "Message": "@concat('IoC entity enrichment failed for this alarm; the incident was created but its Entities tab is empty. Failed actions: ', join(body('Select_Enrichment_Errors'), ' | '))",
+                                                                                    "FullAlarmJson": "@setProperty(items('For_Each_Alarm'), 'alarm_text', 'omitted from the enrichment failure record')"
+                                                                                }
+                                                                            ],
+                                                                            "retryPolicy": {
+                                                                                "type": "exponential",
+                                                                                "count": 2,
+                                                                                "interval": "PT10S"
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
                                                             }
                                                         },
                                                         "else": {
@@ -564,7 +1221,9 @@
                     "AlarmsDcrImmutableId": { "value": "[parameters('AlarmsDcrImmutableId')]" },
                     "AlarmsStreamName": { "value": "[parameters('AlarmsStreamName')]" },
                     "SubscriptionId": { "value": "[subscription().subscriptionId]" },
-                    "ResourceGroupName": { "value": "[parameters('WorkspaceResourceGroup')]" }
+                    "ResourceGroupName": { "value": "[parameters('WorkspaceResourceGroup')]" },
+                    "WorkspaceId": { "value": "[reference(variables('workspaceResourceId'), '2022-10-01').customerId]" },
+                    "EnableIoCEnrichment": { "value": "[parameters('EnableIoCEnrichment')]" }
                 }
             }
         },
@@ -572,11 +1231,11 @@
             "condition": "[not(variables('isExternalWorkspace'))]",
             "type": "Microsoft.Authorization/roleAssignments",
             "apiVersion": "2022-04-01",
-            "name": "[guid(variables('workspaceResourceId'), parameters('PlaybookName'), variables('sentinelRoleDefinitionId'))]",
+            "name": "[guid(variables('workspaceResourceId'), parameters('PlaybookName'), variables('importSentinelRoleDefinitionId'))]",
             "scope": "[variables('workspaceResourceId')]",
             "dependsOn": [ "[resourceId('Microsoft.Logic/workflows', parameters('PlaybookName'))]" ],
             "properties": {
-                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('sentinelRoleDefinitionId'))]",
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('importSentinelRoleDefinitionId'))]",
                 "principalId": "[reference(resourceId('Microsoft.Logic/workflows', parameters('PlaybookName')), '2019-05-01', 'Full').identity.principalId]",
                 "principalType": "ServicePrincipal"
             }
@@ -641,10 +1300,10 @@
                         {
                             "type": "Microsoft.Authorization/roleAssignments",
                             "apiVersion": "2022-04-01",
-                            "name": "[guid(variables('workspaceResourceId'), parameters('PlaybookName'), variables('sentinelRoleDefinitionId'))]",
+                            "name": "[guid(variables('workspaceResourceId'), parameters('PlaybookName'), variables('importSentinelRoleDefinitionId'))]",
                             "scope": "[variables('workspaceResourceId')]",
                             "properties": {
-                                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('sentinelRoleDefinitionId'))]",
+                                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('importSentinelRoleDefinitionId'))]",
                                 "principalId": "[reference(resourceId('Microsoft.Logic/workflows', parameters('PlaybookName')), '2019-05-01', 'Full').identity.principalId]",
                                 "principalType": "ServicePrincipal"
                             }

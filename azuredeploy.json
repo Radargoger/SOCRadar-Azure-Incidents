@@ -931,18 +931,6 @@
                                         ]
                                     }
                                 },
-                                "Increment_Pages_Read": {
-                                    "type": "IncrementVariable",
-                                    "inputs": {
-                                        "name": "pages_read",
-                                        "value": 1
-                                    },
-                                    "runAfter": {
-                                        "Set_Total_Pages": [
-                                            "Succeeded"
-                                        ]
-                                    }
-                                },
                                 "For_Each_Alarm": {
                                     "type": "Foreach",
                                     "foreach": "@coalesce(body('Parse_Page_Response')?['data']?['alarms'], json('[]'))",
@@ -1593,7 +1581,38 @@
                                         }
                                     },
                                     "runAfter": {
-                                        "Increment_Pages_Read": [
+                                        "Set_Total_Pages": [
+                                            "Succeeded"
+                                        ]
+                                    }
+                                },
+                                "Check_Page_Succeeded": {
+                                    "type": "If",
+                                    "expression": {
+                                        "and": [
+                                            {
+                                                "equals": [
+                                                    "@coalesce(body('Parse_Page_Response')?['is_success'], true)",
+                                                    true
+                                                ]
+                                            }
+                                        ]
+                                    },
+                                    "actions": {
+                                        "Increment_Pages_Read": {
+                                            "type": "IncrementVariable",
+                                            "inputs": {
+                                                "name": "pages_read",
+                                                "value": 1
+                                            },
+                                            "runAfter": {}
+                                        }
+                                    },
+                                    "else": {
+                                        "actions": {}
+                                    },
+                                    "runAfter": {
+                                        "For_Each_Alarm": [
                                             "Succeeded"
                                         ]
                                     }
@@ -1936,7 +1955,7 @@
                                             "runStatus": "Failed",
                                             "runError": {
                                                 "code": "ImportIncomplete",
-                                                "message": "@concat('SOCRadar alarm import read ', string(variables('pages_read')), ' of ', string(variables('total_pages')), ' page(s). Open Pagination_Loop in this run to see which page failed.')"
+                                                "message": "@concat('SOCRadar alarm import read ', string(variables('pages_read')), ' of ', string(variables('total_pages')), ' page(s). Open Pagination_Loop in this run to see which page failed. The alarms on the unread page(s) were not imported and a later run will not reach back for them: redeploy with a larger InitialLookbackMinutes to close the gap.')"
                                             }
                                         },
                                         "runAfter": {}

@@ -1324,12 +1324,35 @@
                                                                 },
                                                                 "inputs": "IoC entity enrichment step finished (see Enrich_Incident_Entities scope for details). Incident creation is never blocked by enrichment errors."
                                                             },
-                                                            "Check_Enrichment_Failed": {
+                                                            "Filter_Enrichment_Failures": {
+                                                                "type": "Query",
+                                                                "inputs": {
+                                                                    "from": "@result('Enrich_Incident_Entities')",
+                                                                    "where": "@equals(item()?['status'], 'Failed')"
+                                                                },
+                                                                "runAfter": {
+                                                                    "IoC_Enrichment_Status": [
+                                                                        "Succeeded"
+                                                                    ]
+                                                                }
+                                                            },
+                                                            "Select_Enrichment_Errors": {
+                                                                "type": "Select",
+                                                                "inputs": {
+                                                                    "from": "@take(body('Filter_Enrichment_Failures'), 5)",
+                                                                    "select": "@concat(coalesce(item()?['name'], 'unknown action'), ': ', take(coalesce(string(item()?['error']?['message']), coalesce(item()?['code'], 'no detail')), 200))"
+                                                                },
+                                                                "runAfter": {
+                                                                    "Filter_Enrichment_Failures": [
+                                                                        "Succeeded"
+                                                                    ]
+                                                                }
+                                                            },
+"Check_Enrichment_Failed": {
                                                                 "type": "If",
                                                                 "runAfter": {
-                                                                    "Enrich_Incident_Entities": [
-                                                                        "Failed",
-                                                                        "TimedOut"
+                                                                    "Select_Enrichment_Errors": [
+                                                                        "Succeeded"
                                                                     ]
                                                                 },
                                                                 "expression": {
@@ -1338,6 +1361,12 @@
                                                                             "equals": [
                                                                                 "@parameters('EnableAuditLogging')",
                                                                                 true
+                                                                            ]
+                                                                        },
+                                                                        {
+                                                                            "greater": [
+                                                                                "@length(body('Filter_Enrichment_Failures'))",
+                                                                                0
                                                                             ]
                                                                         }
                                                                     ]
@@ -1364,8 +1393,8 @@
                                                                                     "AlarmType": "@{coalesce(items('For_Each_Alarm')?['alarm_type_details']?['alarm_main_type'], 'N/A')}",
                                                                                     "Status": "@{items('For_Each_Alarm')?['status']}",
                                                                                     "Severity": "@{items('For_Each_Alarm')?['alarm_risk_level']}",
-                                                                                    "Message": "IoC entity enrichment failed for this alarm; the incident was created but its Entities tab is empty. See the Enrich_Incident_Entities scope in the run history.",
-                                                                                    "FullAlarmJson": "@result('Enrich_Incident_Entities')"
+                                                                                    "Message": "@concat('IoC entity enrichment failed for this alarm; the incident was created but its Entities tab is empty. Failed actions: ', join(body('Select_Enrichment_Errors'), ' | '))",
+                                                                                    "FullAlarmJson": "@setProperty(items('For_Each_Alarm'), 'alarm_text', 'omitted from the enrichment failure record')"
                                                                                 }
                                                                             ],
                                                                             "retryPolicy": {

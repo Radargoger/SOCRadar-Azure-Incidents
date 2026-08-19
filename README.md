@@ -183,6 +183,25 @@ the infrastructure template outputs: `alarmsDcrId` into `AlarmsDcrResourceId` an
 Publisher** on each rule. Left empty, the playbook still deploys but every ingestion call returns
 403 and the custom tables stay empty.
 
+## Analytic Rules
+
+Three scheduled rules ship in `Analytic Rules/` as YAML. They are **not** created by the
+deployment - import them from the Sentinel portal once the custom tables exist and have
+data:
+
+**Microsoft Sentinel > Analytics > Import**, then select the files.
+
+| Rule | Fires when |
+|---|---|
+| `SOCRadarCriticalAlarmDetection.yaml` | An open alarm arrives with HIGH or CRITICAL severity |
+| `SOCRadarAlarmVolumeSpike.yaml` | Hourly alarm count for a type exceeds 3x its 7-day average |
+| `SOCRadarUnsyncedClosedIncident.yaml` | A closed SOCRadar incident still has no Synced tag after 30 minutes |
+
+The first two read `SOCRadar_Alarms_CL`, so they need `EnableAlarmsTable` to be true.
+HIGH and CRITICAL alarms are a small fraction of a typical feed, so give the first rule a
+window long enough to contain one before concluding it is broken - `tests/check_alarm_severity.py`
+reports the real distribution for your own tenant.
+
 ## Cross-Region / Cross-Resource-Group
 
 - If your workspace is in a different **region**, set `WorkspaceLocation` to match your workspace region.

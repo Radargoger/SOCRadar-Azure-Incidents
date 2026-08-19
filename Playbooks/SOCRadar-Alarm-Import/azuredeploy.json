@@ -1059,7 +1059,7 @@
                                                                                     "TimeGenerated": "@{utcNow()}",
                                                                                     "EventType": "AlarmImported",
                                                                                     "AlarmId": "@{items('For_Each_Alarm')?['alarm_id']}",
-                                                                                    "IncidentId": "@{items('For_Each_Alarm')?['alarm_id']}",
+                                                                                    "IncidentId": "@{coalesce(body('Create_New_Incident')?['name'], body('Create_Closed_Incident')?['name'], '')}",
                                                                                     "AlarmType": "@{coalesce(items('For_Each_Alarm')?['alarm_type_details']?['alarm_main_type'], 'N/A')}",
                                                                                     "Status": "@{items('For_Each_Alarm')?['status']}",
                                                                                     "Severity": "@{items('For_Each_Alarm')?['alarm_risk_level']}",

@@ -183,6 +183,11 @@ def main():
         elif "Check_SOCRadar_Write_Succeeded" not in placed[0]:
             failures.append(f"Add_Synced_Tag: not inside the guard in the {label} sync playbook ({placed[0]})")
 
+    # The audit row's own fields: these drifted once (the standalone logged the alarm id
+    # into IncidentId, losing the Sentinel incident name the shipped KQL projects).
+    compare("Log_Audit_Event body", request_body(root_import, "Log_Audit_Event"),
+            request_body(mod_import, "Log_Audit_Event"))
+
     # Redaction: every data collection rule must keep the pack() allow-list.
     for label, path in (("root", ROOT), ("alarms infrastructure", ALARMS_INFRA), ("audit infrastructure", AUDIT_INFRA)):
         for kql in transforms(load(path)):

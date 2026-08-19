@@ -6,6 +6,19 @@ same logic. They silently drifted apart for six months once, which shipped four 
 anyone who deployed the standalone path. This check compares the expressions that carry the
 behaviour and exits non-zero when they stop matching.
 
+Three later invariants (stalled loop counters, result() in request bodies, and the
+PT1H sweep widened to every template) came back from a downstream fork that had ported
+this file and extended it there.
+
+Adaptation notes (that fork differs from this repo):
+  - Its sync playbook has no named "Check_SOCRadar_Write_Succeeded" action, so its copy
+    compares runAfter dependencies instead. This repo has the named condition, so the
+    original comparison is kept as-is and Add_Synced_Tag is still checked for sitting
+    inside it.
+  - Its import playbook drives alarms from a Pagination_Loop; this one accumulates into
+    all_alarms and drives a single For_Each_Alarm. The loop checks below key off action
+    types rather than those names, so they apply unchanged.
+
 Run:  python3 tools/check_template_drift.py
 """
 
@@ -19,6 +32,11 @@ IMPORT = os.path.join(REPO, "Playbooks", "SOCRadar-Alarm-Import", "azuredeploy.j
 SYNC = os.path.join(REPO, "Playbooks", "SOCRadar-Alarm-Sync", "azuredeploy.json")
 ALARMS_INFRA = os.path.join(REPO, "Playbooks", "SOCRadar-Alarms-Infrastructure", "azuredeploy.json")
 AUDIT_INFRA = os.path.join(REPO, "Playbooks", "SOCRadar-Audit-Infrastructure", "azuredeploy.json")
+WORKBOOK = os.path.join(REPO, "Playbooks", "SOCRadar-Workbook", "azuredeploy.json")
+
+# Every azuredeploy.json in the repo, including the ones not compared above
+# (the workbook has no workflow or DCR to drift).
+ALL_TEMPLATES = [ROOT, IMPORT, SYNC, ALARMS_INFRA, AUDIT_INFRA, WORKBOOK]
 
 
 def load(path):
@@ -82,6 +100,53 @@ def transforms(template):
     return out
 
 
+def until_loops(template):
+    """Yield (action_path, until_body) for every Until loop in a template."""
+    for resource in template.get("resources", []):
+        if resource.get("type") != "Microsoft.Logic/workflows":
+            continue
+        for path, body in walk_actions(resource["properties"]["definition"]["actions"]).items():
+            if body.get("type") == "Until":
+                yield path, body
+
+
+def stalled_progress(until_body):
+    """Names of loop actions a single failed Foreach item would leave Skipped.
+
+    A Foreach reports Failed when any one of its items fails, which is normal when the
+    items are independent records. An action that advances the loop must not hang off
+    that status alone, or the loop repeats the same page until it times out.
+    """
+    inner = until_body.get("actions", {})
+    foreaches = {name for name, body in inner.items() if body.get("type") == "Foreach"}
+    stalled = []
+    for name, body in inner.items():
+        if body.get("type") not in ("IncrementVariable", "SetVariable"):
+            continue
+        for dependency, statuses in (body.get("runAfter") or {}).items():
+            if dependency in foreaches and "Failed" not in statuses:
+                stalled.append(f"{name} waits for {dependency} {statuses}")
+    return stalled
+
+
+def unbounded_result_payloads(template):
+    """Request bodies embedding result(), which carries every action's inputs and outputs.
+
+    Such a body can reach megabytes and Azure Monitor rejects it with
+    RequestEntityTooLarge, so the write is lost while the run still reports success.
+    """
+    offenders = []
+    for resource in template.get("resources", []):
+        if resource.get("type") != "Microsoft.Logic/workflows":
+            continue
+        for path, body in walk_actions(resource["properties"]["definition"]["actions"]).items():
+            if body.get("type") != "Http":
+                continue
+            if "result(" in json.dumps((body.get("inputs") or {}).get("body")):
+                offenders.append(path)
+    return offenders
+
+
 def main():
     root = load(ROOT)
     root_import = workflow_actions(root, want_sync=False)
@@ -125,10 +190,21 @@ def main():
                 failures.append(f"transformKql in {label}: missing the pack() allow-list (value: {str(kql)[:60]})")
 
     # Bounded retries and loops, so a failing API call cannot stall the integration.
-    for label, path in (("root", ROOT), ("standalone import", IMPORT), ("standalone sync", SYNC)):
-        raw = open(path).read()
-        if '"PT1H"' in raw:
-            failures.append(f"{label}: still contains a PT1H retry or loop timeout")
+    # Swept across every template, not just the three compared above: a cheap net.
+    for path in ALL_TEMPLATES:
+        if '"PT1H"' in open(path).read():
+            failures.append(f"{os.path.relpath(path, REPO)}: still contains a PT1H retry or loop timeout")
+
+    # A loop must keep advancing when one record in it fails, and no request body may
+    # ship result() -- both classes fail silently, the run still reports success.
+    for path in ALL_TEMPLATES:
+        template = load(path)
+        rel = os.path.relpath(path, REPO)
+        for loop_path, loop in until_loops(template):
+            for stall in stalled_progress(loop):
+                failures.append(f"{rel}: {loop_path} cannot advance past a failed record ({stall})")
+        for offender in unbounded_result_payloads(template):
+            failures.append(f"{rel}: {offender} puts result() in a request body")
 
     if failures:
         print("TEMPLATE DRIFT DETECTED\n")

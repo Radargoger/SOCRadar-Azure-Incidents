@@ -54,7 +54,11 @@ jobs:
         run: |
           python3 - <<'PY'
           import subprocess, sys
-          files = subprocess.run(["git", "ls-files"], capture_output=True, text=True).stdout.split()
+          # NUL-separated: this repo has a tracked directory with a space in its name
+          # ("Analytic Rules/"), which a plain .split() on git-ls-files output would
+          # break apart into two bogus paths.
+          out = subprocess.run(["git", "ls-files", "-z"], capture_output=True, text=True).stdout
+          files = [f for f in out.split("\x00") if f]
           bad = []
           for name in files:
               try:

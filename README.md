@@ -26,16 +26,16 @@ Bidirectional integration between SOCRadar XTI Platform and Microsoft Sentinel.
 > instead of sending alarms to a workspace nobody is watching. To have the template create
 > the workspace, set `DeployNewWorkspace` to `true`.
 
-> **Do not set `DeployNewWorkspace=true` for a workspace that already exists.** A workspace
-> resource in an ARM template is a create-or-update, so it would rewrite the workspace's
-> `sku` to `PerGB2018` (pay-as-you-go) and discard a commitment tier, raising the bill for
-> the same ingestion volume.
+> **`DeployNewWorkspace=true` on a workspace that already exists is pointless but harmless.**
+> The workspace resource declares no workspace-level settings at all, and a template only
+> overwrites the fields it states, so the pricing tier, retention and daily cap of an existing
+> workspace survive untouched. Leave the parameter `false` anyway: it says what you mean.
 
 ### Optional Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `DeployNewWorkspace` | false | Create the workspace named `WorkspaceName` instead of using an existing one. Leave `false` for an existing workspace: `true` overwrites its pricing tier with pay-as-you-go. Ignored when `WorkspaceResourceGroup` is not the deployment resource group |
+| `DeployNewWorkspace` | false | Create the workspace named `WorkspaceName` instead of using an existing one. A new workspace gets the subscription default pricing tier; no workspace-level setting is ever written to an existing one. Ignored when `WorkspaceResourceGroup` is not the deployment resource group |
 | `WorkspaceLocation` | *(deployment resource group's region)* | Set if your workspace is in a different region |
 | `WorkspaceResourceGroup` | *(same as deployment RG)* | Set if your workspace is in a different resource group |
 | `SentinelRoleLevel` | Responder | Sentinel role for Logic Apps (see [Role Selection](#role-selection)) |
@@ -48,6 +48,29 @@ Bidirectional integration between SOCRadar XTI Platform and Microsoft Sentinel.
 | `EnableIoCEnrichment` | true | Attach IP, domain and URL indicators from the alarm to the incident as entities (see [IoC Entity Enrichment](#ioc-entity-enrichment)) |
 | `ImportAllStatuses` | false | Import alarms of every status, not only open ones. Closed alarms are created as closed incidents |
 
+## Existing installations
+
+Deployments made before the `DeployNewWorkspace` parameter existed stated a pricing tier on
+the workspace resource, and a template overwrites every field it states. If the target
+workspace was on a **commitment tier**, that deployment reset it to `PerGB2018`
+(pay-as-you-go), which bills more for the same ingestion volume.
+
+Check the current tier:
+
+```bash
+az monitor log-analytics workspace show -g <resource-group> -n <workspace> \
+  --query "{sku:sku.name, lastSkuUpdate:sku.lastSkuUpdate}" -o json
+```
+
+Portal: **Log Analytics workspaces > your workspace > Usage and estimated costs > Daily cap
+/ Pricing tier**. If `lastSkuUpdate` is close to when you first deployed this integration and
+the tier is not the one you selected, set your commitment tier again from that screen.
+
+Nothing else was affected. Retention, the daily cap and resource tags are not stated by the
+template, so they were never written; this was measured, not assumed. The current template
+states no workspace-level settings at all, so redeploying it - or upgrading an existing
+install - cannot change any workspace setting.
+
 ## What Gets Deployed
 
 - **SOCRadar-Alarm-Import** - Imports alarms from SOCRadar as Sentinel incidents
@@ -56,8 +79,9 @@ Bidirectional integration between SOCRadar XTI Platform and Microsoft Sentinel.
 - **SOCRadar Analytics Dashboard** - Workbook with charts and tables (if EnableWorkbook=true)
 - **SOCRadarAuditLog_CL** - Audit log table (if EnableAuditLogging=true)
 - **Data Collection Endpoint & Rules** - For data ingestion
-- **Workspace** - only when `DeployNewWorkspace=true`. An existing workspace is left exactly
-  as it is: no pricing tier, retention or daily cap is written to it
+- **Workspace** - only when `DeployNewWorkspace=true`, created with the subscription default
+  pricing tier. The template states no workspace-level settings, so no pricing tier, retention
+  or daily cap is ever written to a workspace that already exists
 - **Sentinel onboarding** - applied whenever the workspace is in the deployment resource
   group, whether the workspace is new or existing, so a workspace without Sentinel gets
   onboarded. It adds the SecurityInsights solution and does not change workspace settings

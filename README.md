@@ -20,14 +20,22 @@ Bidirectional integration between SOCRadar XTI Platform and Microsoft Sentinel.
 
 > **Note:** You can find your Workspace Name in Azure Portal > Log Analytics workspaces > your workspace > Overview > "Name" field.
 
-> **Important:** if `WorkspaceName` does not match an existing workspace, the template
-> **creates a new empty workspace** with that name and onboards Sentinel onto it. Check the
-> spelling before deploying, otherwise alarms are imported into a workspace nobody is watching.
+> **Important:** the template deploys onto an **existing** workspace by default and never
+> touches its workspace-level settings. If `WorkspaceName` does not match an existing
+> workspace the deployment **fails** rather than creating one silently, so a typo is caught
+> instead of sending alarms to a workspace nobody is watching. To have the template create
+> the workspace, set `DeployNewWorkspace` to `true`.
+
+> **Do not set `DeployNewWorkspace=true` for a workspace that already exists.** A workspace
+> resource in an ARM template is a create-or-update, so it would rewrite the workspace's
+> `sku` to `PerGB2018` (pay-as-you-go) and discard a commitment tier, raising the bill for
+> the same ingestion volume.
 
 ### Optional Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
+| `DeployNewWorkspace` | false | Create the workspace named `WorkspaceName` instead of using an existing one. Leave `false` for an existing workspace: `true` overwrites its pricing tier with pay-as-you-go. Ignored when `WorkspaceResourceGroup` is not the deployment resource group |
 | `WorkspaceLocation` | *(deployment resource group's region)* | Set if your workspace is in a different region |
 | `WorkspaceResourceGroup` | *(same as deployment RG)* | Set if your workspace is in a different resource group |
 | `SentinelRoleLevel` | Responder | Sentinel role for Logic Apps (see [Role Selection](#role-selection)) |
@@ -48,7 +56,11 @@ Bidirectional integration between SOCRadar XTI Platform and Microsoft Sentinel.
 - **SOCRadar Analytics Dashboard** - Workbook with charts and tables (if EnableWorkbook=true)
 - **SOCRadarAuditLog_CL** - Audit log table (if EnableAuditLogging=true)
 - **Data Collection Endpoint & Rules** - For data ingestion
-- **Workspace and Sentinel onboarding** - only when `WorkspaceName` does not already exist
+- **Workspace** - only when `DeployNewWorkspace=true`. An existing workspace is left exactly
+  as it is: no pricing tier, retention or daily cap is written to it
+- **Sentinel onboarding** - applied whenever the workspace is in the deployment resource
+  group, whether the workspace is new or existing, so a workspace without Sentinel gets
+  onboarded. It adds the SecurityInsights solution and does not change workspace settings
 - **Role assignments** - the two playbook identities get the least privilege they need:
   Log Analytics Reader, Monitoring Metrics Publisher on each data collection rule, and the
   Sentinel role from `SentinelRoleLevel`. The import identity is raised to Microsoft Sentinel
@@ -206,6 +218,7 @@ reports the real distribution for your own tenant.
 
 - If your workspace is in a different **region**, set `WorkspaceLocation` to match your workspace region.
 - If your workspace is in a different **resource group**, set `WorkspaceResourceGroup`. Custom tables, workbook, and audit logging require same-RG deployment.
+- `DeployNewWorkspace` only works in the deployment resource group; a workspace cannot be created in another resource group from this template.
 
 ## Post-Deployment
 

@@ -24,6 +24,7 @@ Run:  python3 tools/check_template_drift.py
 
 import json
 import os
+import re
 import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -193,6 +194,38 @@ def main():
         for kql in transforms(load(path)):
             if not kql or "pack(" not in kql:
                 failures.append(f"transformKql in {label}: missing the pack() allow-list (value: {str(kql)[:60]})")
+
+    # An existing workspace must never be rewritten by the deployment. A workspace resource
+    # in a template is a create-or-update, so an ungated one PUTs sku=PerGB2018 over the
+    # target workspace and silently drops a commitment tier off a customer's bill. The gate
+    # has to be an explicit opt-in parameter: resource-group equality was the earlier guard
+    # and it does not hold, because the common case is deploying into the resource group
+    # that already contains the workspace.
+    root_variables = root.get("variables", {})
+
+    def expand_variables(expression):
+        """Inline one level of variables('x') so the check reads through an indirection."""
+        def swap(match):
+            value = root_variables.get(match.group(1))
+            return value if isinstance(value, str) else match.group(0)
+        return re.sub(r"variables\('([^']+)'\)", swap, expression)
+
+    workspaces = [r for r in root.get("resources", [])
+                  if r.get("type") == "Microsoft.OperationalInsights/workspaces"]
+    if not workspaces:
+        failures.append("azuredeploy.json: no workspace resource found - this check has gone blind")
+    for resource in workspaces:
+        condition = resource.get("condition", "")
+        if "DeployNewWorkspace" not in expand_variables(condition):
+            failures.append(
+                "azuredeploy.json: the workspace resource is not gated on DeployNewWorkspace "
+                f"(condition: {condition or 'none'}) - it would overwrite an existing workspace's sku"
+            )
+    if root.get("parameters", {}).get("DeployNewWorkspace", {}).get("defaultValue") is not False:
+        failures.append(
+            "azuredeploy.json: DeployNewWorkspace must default to false, so the one-click deployment "
+            "never creates or rewrites a workspace unless the operator asks for it"
+        )
 
     # Bounded retries and loops, so a failing API call cannot stall the integration.
     # Swept across every template, not just the three compared above: a cheap net.

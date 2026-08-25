@@ -122,7 +122,7 @@
             "type": "bool",
             "defaultValue": false,
             "metadata": {
-                "description": "Create a new Log Analytics workspace named WorkspaceName. Leave false when deploying onto a workspace that already exists: a workspace resource in a template is a create-or-update, so deploying it over an existing workspace overwrites its pricing tier with PerGB2018 (pay-as-you-go) and discards a commitment tier. Only honoured when WorkspaceResourceGroup is the deployment resource group, because a workspace cannot be created in another resource group from here."
+                "description": "Create a new Log Analytics workspace named WorkspaceName. Leave false when the workspace already exists. The workspace resource declares no workspace-level settings, so even a mistaken true cannot rewrite an existing workspace pricing tier, retention or daily cap: a template only overwrites the fields it states, and this one states none. A new workspace is created with the subscription default tier. Only honoured when WorkspaceResourceGroup is the deployment resource group, because a workspace cannot be created in another resource group from here."
             }
         }
     },
@@ -155,11 +155,7 @@
             "apiVersion": "2023-09-01",
             "name": "[parameters('WorkspaceName')]",
             "location": "[parameters('WorkspaceLocation')]",
-            "properties": {
-                "sku": {
-                    "name": "PerGB2018"
-                }
-            }
+            "properties": {}
         },
         {
             "condition": "[not(variables('isExternalWorkspace'))]",

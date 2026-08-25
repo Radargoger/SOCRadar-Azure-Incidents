@@ -221,6 +221,20 @@ def main():
                 "azuredeploy.json: the workspace resource is not gated on DeployNewWorkspace "
                 f"(condition: {condition or 'none'}) - it would overwrite an existing workspace's sku"
             )
+    # The workspace resource must state no workspace-level settings. A template overwrites
+    # exactly the fields it states, so an empty properties block is what makes a mistaken
+    # DeployNewWorkspace=true harmless instead of a pricing-tier rewrite. sku is the field
+    # that caused the incident; the others are here because they carry the same blast radius.
+    for resource in workspaces:
+        stated = set((resource.get("properties") or {}).keys())
+        dangerous = stated & {"sku", "retentionInDays", "workspaceCapping",
+                              "publicNetworkAccessForIngestion", "publicNetworkAccessForQuery"}
+        if dangerous:
+            failures.append(
+                "azuredeploy.json: the workspace resource states "
+                f"{sorted(dangerous)} - a deployment would write these over an existing workspace"
+            )
+
     if root.get("parameters", {}).get("DeployNewWorkspace", {}).get("defaultValue") is not False:
         failures.append(
             "azuredeploy.json: DeployNewWorkspace must default to false, so the one-click deployment "

@@ -240,7 +240,21 @@ reports the real distribution for your own tenant.
 
 ## Cross-Region / Cross-Resource-Group
 
-- If your workspace is in a different **region**, set `WorkspaceLocation` to match your workspace region.
+- If your workspace is in a different **region**, set `WorkspaceLocation` to your workspace's
+  region. A workspace's region is independent of its resource group's region, so read it from
+  the workspace Overview blade instead of assuming they match - the parameter defaults to the
+  resource group's region, which is wrong whenever they differ.
+  Deploying with the wrong value fails with:
+
+  ```
+  LinkedResourceNotFound: Linked Workspace '/subscriptions/.../workspaces/<name>'
+  was not found in location '<region>'
+  ```
+
+  The workspace exists; the region is wrong. Set `WorkspaceLocation` and redeploy - the message
+  names the resource, not the actual cause. (The template cannot read the region off the
+  workspace for you: ARM rejects the `reference()` function in a resource's `location` field
+  with `InvalidTemplate: The template function 'reference' is not expected at this location`.)
 - If your workspace is in a different **resource group**, set `WorkspaceResourceGroup`. Custom tables, workbook, and audit logging require same-RG deployment.
 - `DeployNewWorkspace` only works in the deployment resource group; a workspace cannot be created in another resource group from this template.
 

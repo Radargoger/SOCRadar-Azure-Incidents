@@ -1,6 +1,6 @@
 {
     "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
-    "contentVersion": "1.0.0.0",
+    "contentVersion": "1.0.0",
     "metadata": {
         "title": "SOCRadar-Workbook",
         "description": "NOT RECOMMENDED - deploy azuredeploy.json in the repository root instead, which includes this dashboard. SOCRadar Analytics Dashboard for Microsoft Sentinel",
@@ -11,7 +11,11 @@
     "parameters": {
         "WorkspaceName": {
             "type": "string",
-            "metadata": { "description": "NOT RECOMMENDED: deploy azuredeploy.json from the repository root instead, which includes this dashboard. --- Microsoft Sentinel Log Analytics Workspace Name" }
+            "metadata": { "description": "NOT RECOMMENDED: deploy azuredeploy.json from the repository root instead. --- Microsoft Sentinel Log Analytics Workspace Name" }
+        },
+        "WorkspaceLocation": {
+            "type": "string",
+            "metadata": { "description": "Region of the Log Analytics workspace (e.g., centralus, northeurope). This is the region of the WORKSPACE, which can differ from the region of the resource group you deploy into; read it from the workspace Overview blade rather than assuming. A wrong value fails the deployment with LinkedResourceNotFound: Linked Workspace ... was not found in location <region>; if the workspace name is correct, that error means this parameter is wrong." }
         }
     },
     "variables": {
@@ -24,7 +28,7 @@
             "type": "Microsoft.Insights/workbooks",
             "apiVersion": "2022-04-01",
             "name": "[guid(resourceGroup().id, variables('WorkbookName'))]",
-            "location": "[resourceGroup().location]",
+            "location": "[parameters('WorkspaceLocation')]",
             "kind": "shared",
             "properties": {
                 "displayName": "SOCRadar Integration Dashboard",

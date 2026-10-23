@@ -34,6 +34,7 @@ SOCRadar_Alarms_CL
 | where TimeGenerated > ago(7d)
 | join kind=leftouter (
     SecurityIncident
+    | summarize arg_max(TimeGenerated, *) by IncidentNumber
     | where TimeGenerated > ago(7d)
     | where Title contains "[SOCRadar]"
     | extend AlarmId = extract(@"#(\d+)", 1, Title)
@@ -105,7 +106,22 @@ SOCRadarAuditLog_CL
 // status_s, ...): they are created by the first log rows, and referencing one directly before
 // that fails the whole query with BadArgumentError / SEM0100 "Failed to resolve scalar
 // expression". That is why both queries read those columns through column_ifexists.
+// The setting does not backfill either:
+// runs that happened before it existed are never captured, so enabling it after an
+// incident will not explain that incident. In our test the first rows appeared about
+// five minutes after the run, so an empty result immediately after enabling the
+// setting means "not yet", not "misconfigured".
 // Application-level failures are recorded in SOCRadarAuditLog_CL instead (section 3).
+//
+// Verified live on 18 Aug 2026 with a throwaway workflow, so the name filter below was
+// pointed at it rather than at SOCRadar. Everything else ran unchanged: the columns
+// resolve and the failing action carries the useful text.
+//   workflowActionCompleted   Action = Will_Fail   Error = "The provided host name
+//                             'does-not-exist.invalid' could not be resolved."
+//   workflowRunCompleted      Action = empty       Error = "An action failed. No
+//                             dependent actions succeeded."
+// The run-level row summarises and names no action, so filter on Action when you want
+// the cause rather than the summary.
 
 // Failed Logic App actions
 AzureDiagnostics
@@ -148,10 +164,10 @@ SOCRadar_Alarms_CL
 | where Severity in ("HIGH", "CRITICAL")
 | join kind=leftouter (
     SecurityIncident
-    | where Status != "Closed"
+    | summarize arg_max(TimeGenerated, *) by IncidentNumber
     | extend AlarmId = extract(@"#(\d+)", 1, Title)
 ) on AlarmId
-| where Status1 != "Closed" or isnull(Status1)
+| where isempty(Status1) or Status1 != "Closed"
 | project
     AlarmId,
     Severity,
@@ -172,6 +188,7 @@ SOCRadar_Alarms_CL
 
 // Mean time to close (incidents)
 SecurityIncident
+| summarize arg_max(TimeGenerated, *) by IncidentNumber
 | where Title contains "[SOCRadar]"
 | where Status == "Closed"
 | extend MTTC = datetime_diff('hour', ClosedTime, CreatedTime)
@@ -208,7 +225,7 @@ SOCRadar_Alarms_CL
     Type = strcat(AlarmMainType, " / ", AlarmSubType),
     Title,
     Status,
-    SOCRadarLink = strcat("https://platform.socradar.com/company/", CompanyId, "/alarm/", AlarmId)
+    SOCRadarLink = strcat("https://platform.socradar.com/app/company/", CompanyId, "/alarm-management?tab=approved&field=alarmId&operator=equals&value=", AlarmId)
 | order by TimeGenerated desc
 | take 100
 

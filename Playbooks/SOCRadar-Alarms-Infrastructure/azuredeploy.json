@@ -3,7 +3,7 @@
     "contentVersion": "1.0.0",
     "metadata": {
         "title": "SOCRadar-Alarms-Infrastructure",
-        "description": "NOT RECOMMENDED - deploy azuredeploy.json in the repository root instead, which creates this infrastructure and wires the playbook permissions to it. Creates DCE, Custom Table and DCR for storing SOCRadar alarms in Log Analytics",
+        "description": "NOT RECOMMENDED - deploy azuredeploy.json in the repository root instead, which creates this and wires the playbook permissions to it. Creates DCE, Custom Table and DCR for storing SOCRadar alarms in Log Analytics",
         "version": "1.0.0",
         "author": "SOCRadar",
         "lastUpdateTime": "2026-02-04T00:00:00.000Z"
@@ -11,11 +11,11 @@
     "parameters": {
         "WorkspaceName": {
             "type": "string",
-            "metadata": { "description": "NOT RECOMMENDED: deploy azuredeploy.json from the repository root instead, which creates this infrastructure and grants the playbook the permissions it needs. --- Microsoft Sentinel Log Analytics Workspace Name" }
+            "metadata": { "description": "NOT RECOMMENDED: deploy azuredeploy.json from the repository root instead. --- Microsoft Sentinel Log Analytics Workspace Name" }
         },
         "WorkspaceLocation": {
             "type": "string",
-            "metadata": { "description": "Region of the Log Analytics workspace (e.g., centralus, northeurope). This is the region of the WORKSPACE, which can differ from the region of the resource group you deploy into - check the workspace Overview blade rather than assuming." }
+            "metadata": { "description": "Region of the Log Analytics workspace (e.g., centralus, northeurope). This is the region of the WORKSPACE, which can differ from the region of the resource group you deploy into; read it from the workspace Overview blade rather than assuming. A wrong value fails the deployment with LinkedResourceNotFound: Linked Workspace ... was not found in location <region>; if the workspace name is correct, that error means this parameter is wrong." }
         },
         "TableRetentionDays": {
             "type": "int",

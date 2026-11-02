@@ -373,16 +373,15 @@ def main():
                 f"{sorted(dangerous)} - a deployment would write these over an existing workspace"
             )
 
-    # The Deploy button is a one-click install: the workspace it names gets created. This is
-    # safe against an existing workspace only because of the empty properties block checked
-    # above (task_azure_0065 measured a full 22-field diff of zero, tags included). The
-    # default was false from task_azure_0034 until 0065; with it, every click on a fresh
-    # name failed at the precheck with a raw ResourceNotFound.
+    # The default is false: a misspelled WorkspaceName must fail at the precheck instead of
+    # creating a second, empty workspace. Creating a workspace is opt-in (true). That is safe
+    # against an existing workspace even then, because of the empty properties block checked
+    # above (task_azure_0065 measured a full 22-field diff of zero, tags included).
     params = root.get("parameters", {})
-    if params.get("DeployNewWorkspace", {}).get("defaultValue") is not True:
+    if params.get("DeployNewWorkspace", {}).get("defaultValue") is not False:
         failures.append(
-            "azuredeploy.json: DeployNewWorkspace must default to true, so the one-click deployment "
-            "creates the workspace it names instead of failing on a fresh name"
+            "azuredeploy.json: DeployNewWorkspace must default to false, so a misspelled WorkspaceName "
+            "fails before anything is created instead of silently creating a second, empty workspace"
         )
     # The portal form lists parameters in declaration order. The switch belongs right under
     # the name it acts on; at the bottom of an 18-parameter form it was missed twice in a row.
@@ -601,7 +600,7 @@ def main():
         print("TEMPLATE DRIFT DETECTED\n")
         for item in failures:
             print("  - " + item)
-        print(f"\n{len(failures)} problem(s). Update the standalone templates under Playbooks/ to match azuredeploy.json.")
+        print(f"\n{len(failures)} problem(s). Fix the file named in each line above; the standalone templates under Playbooks/ have to match azuredeploy.json.")
         return 1
 
     print("No drift: standalone templates match azuredeploy.json on all checked invariants.")

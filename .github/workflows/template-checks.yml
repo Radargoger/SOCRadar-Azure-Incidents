@@ -11,6 +11,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Commit messages carry no identifiers or signatures
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          TIP: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -e
+          # A new branch, a force push or a manual run has no usable "before": check the tip commit only.
+          if [ -z "$BASE" ] || [ "$BASE" = 0000000000000000000000000000000000000000 ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            RANGE="$TIP~1..$TIP"
+          else
+            RANGE="$BASE..$TIP"
+          fi
+          echo "  range $RANGE"
+          bash tools/check_commit_hygiene.sh "$RANGE"
 
       - name: Every ARM template parses as JSON
         run: |
@@ -87,6 +104,18 @@ jobs:
       - name: Sync reaches back a day and a failed page fails the run
         run: python3 tests/test_sync_window.py
 
+      - name: The once-a-day rescan and the User-Agent behave as specified
+        run: python3 tests/test_daily_rescan.py
+
+      - name: The daily rescan test actually fails when the rescan is broken
+        run: python3 tests/mutate_daily_rescan.py
+
+      - name: The first-run window is bounded to the 7 days the import reads
+        run: python3 tests/test_lookback_bounds.py
+
+      - name: The bounds test actually fails when a bound moves
+        run: python3 tests/mutate_lookback_bounds.py
+
       - name: Shipped queries do what the README says
         run: python3 tests/test_query_logic.py
 
@@ -95,6 +124,18 @@ jobs:
 
       - name: Alarm link opens the alarm and Sync reads both shapes
         run: python3 tests/test_alarm_link.py
+
+      - name: Workbook renders and its joins are guarded
+        run: python3 tests/test_workbook.py
+
+      - name: Workbook test catches every deliberate break
+        run: python3 tests/mutate_workbook.py
+
+      - name: Alert-backed test catches every deliberate break
+        run: python3 tests/mutate_alert_backed.py
+
+      - name: Import integrity test catches every deliberate break
+        run: python3 tests/mutate_import_integrity.py
 
       - name: No secrets in tracked files
         run: |

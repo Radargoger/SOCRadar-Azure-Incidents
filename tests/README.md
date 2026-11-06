@@ -15,11 +15,20 @@ shape and never runs a workflow action.
 | `../tools/check_template_drift.py` | The standalone playbooks have not fallen behind `azuredeploy.json` |
 | `../tools/check_analytic_rules.py` | The shipped analytic rules are well formed |
 | `test_checkpoint.py` | The import window comes from the storage checkpoint, not from incident titles: the account's name and security properties, the role assignment's scope, the GET/PUT headers Table Storage requires, and that the checkpoint is written only after a complete read |
+| `../tools/check_commit_hygiene.sh` | Before pushing: fails when a commit message in `master..HEAD` carries a company id, a workspace or resource group name, an alarm id or a tool signature. Runs in CI too; `--msg-file` makes it a `commit-msg` hook |
+| `test_daily_rescan.py` | The shipped lookback expression, evaluated at fixed clock times: once a day after 09:00 UTC it reaches back 5 days, otherwise the gap since the last run, never past 7 days; no parameter exposes it; Direct mode imports nothing while the existing-incident list is cut short; every SOCRadar call of the import sends a User-Agent |
+| `mutate_daily_rescan.py` | Breaks the rescan in 10 ways in both template copies; the rescan test must fail each one |
+| `test_lookback_bounds.py` | `InitialLookbackMinutes` is bounded 10 to 10080 in the combined template and the standalone import playbook, the default sits inside, and 10080 is the clamp in `Determine_Lookback` |
+| `mutate_lookback_bounds.py` | Moves each bound and the clamp in both template copies (6 mutations); the bounds test must fail each one |
+| `test_workbook.py` | The workbook renders, its alert stand-in is guarded and its joins give one row per alarm and incident |
+| `mutate_workbook.py` | Breaks the workbook in 11 ways in both template copies; the workbook test must fail each one with its own failure line |
+| `mutate_alert_backed.py` | Breaks the alert-backed mode in every rule and both template copies; the alert-backed test must fail each one with its own failure line, a crash counts as blind |
+| `mutate_import_integrity.py` | Breaks the no-IoC marker and the IoC playbook's alarm-id reader in 33 ways, on the parsed JSON (branch, dependency, threshold, id); the integrity test must fail each one with its own failure summary |
 | `test_severity_sync_logic.py` | The severity write-back can only raise a severity, is gated by `SyncSeverity`, is judged by `is_success`, and that both label builders carry the labels Sync reads |
 | `test_management_base_url.py` | No template hardcodes the public-cloud ARM host |
 | `test_hunting_queries.py` | Every column the hunting queries read is one the deployment creates |
 | `test_cross_rg_roles.py` | The cross-RG nested role assignments grant the import identity the same elevated role the same-RG path grants, so IoC enrichment does not silently 403 when the workspace lives in another resource group |
-| `test_import_integrity.py` | The import cannot lose alarms or duplicate incidents silently |
+| `test_import_integrity.py` | The import cannot lose alarms or duplicate incidents silently, the backfill marks an alarm it found empty so it is not re-read every run, and both alarm-id readers take the first `#` segment |
 | `test_incident_dedup.py` | Every `SecurityIncident` query collapses to the newest version of each incident |
 | `test_incident_dedup_projection.py` | The existing-incident page is projected to the fields its consumers read |
 | `test_domain_tld_whitelist.py` | Domain entities are matched against real country codes, not any two letters |

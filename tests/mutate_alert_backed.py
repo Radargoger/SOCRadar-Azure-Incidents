@@ -42,16 +42,132 @@ def workflow(template, kind):
             return resource
 
 
+CATS = ["Phishing", "Credential", "DataLeak", "Vulnerability", "Other"]
+TARGET = [0]  # which of the five rules a rule-scoped mutation hits
+
+
 def rule(template):
     nested = next(r for r in template["resources"] if r.get("name") == "deploy-alert-backed-rule")
     inner = nested["properties"]["template"]["resources"]
-    return next(r for r in inner if r["type"].endswith("/alertRules")), \
+    return [r for r in inner if r["type"].endswith("/alertRules")][TARGET[0]], \
         next(r for r in inner if r["type"].endswith("/automationRules"))
+
+
+def all_rules(template):
+    nested = next(r for r in template["resources"] if r.get("name") == "deploy-alert-backed-rule")
+    return [r for r in nested["properties"]["template"]["resources"] if r["type"].endswith("/alertRules")]
+
+
+def m_classifier_drifts_in_one_rule(t):
+    r, _ = rule(t)
+    r["properties"]["query"] = r["properties"]["query"].replace('"Code Repository Data Leak", ', "", 1)
+
+
+def m_pair_dropped_everywhere(t):
+    for r in all_rules(t):
+        r["properties"]["query"] = r["properties"]["query"].replace('"PII Exposure", ', "", 1)
+
+
+def m_catch_all_new_guid(t):
+    t["variables"]["alertBackedRuleId"] = "[guid(variables('workspaceResourceId'), 'socradar-alert-backed-rule-2')]"
+
+
+def m_automation_omits_one_rule(t):
+    _, auto = rule(t)
+    values = auto["properties"]["triggeringLogic"]["conditions"][0]["conditionProperties"]["propertyValues"]
+    del values[-1]
+
+
+def m_credential_switch_ignored(t):
+    for r in all_rules(t):
+        if "Credential" in r["properties"]["query"].split("| where AlarmCategory == ")[1][:14]:
+            r["properties"]["enabled"] = True
+
+
+def m_dcr_drops_a_key(t):
+    for res in t["resources"]:
+        if res["type"] == "Microsoft.Insights/dataCollectionRules" and "AlarmsDcrName" in res["name"]:
+            for flow in res["properties"]["dataFlows"]:
+                flow["transformKql"] = flow["transformKql"].replace(", 'computer_name', AlarmPayload['content']['computer_name']", "")
+
+
+def m_title_uses_entity_column(t):
+    r, _ = rule(t)
+    r["properties"]["alertDetailsOverride"]["alertDisplayNameFormat"] = r["properties"]["alertDetailsOverride"]["alertDisplayNameFormat"].replace("SuspiciousDomainLabel", "SuspiciousDomain")
+
+
+def m_credential_copies_secret(t):
+    r, _ = rule(t)
+    r["properties"]["query"] = r["properties"]["query"].replace("| extend HasMachineInfo", "| extend ExposedUser = tostring(AlarmPayload['credential_details'])\n| extend HasMachineInfo")
+
+
+def m_origin_by_machine_word(t):
+    r, _ = rule(t)
+    r["properties"]["query"] = r["properties"]["query"].replace('case(Title has "Employee", "Employee",', 'case(Title has "Machine", "InfectedMachine", Title has "Employee", "Employee",')
+
+
+def m_leak_url_any(t):
+    r, _ = rule(t)
+    r["properties"]["query"] = r["properties"]["query"].replace(' and LeakUrl !has "socradar.com"', "")
+
+
+def m_query_too_long(t):
+    r, _ = rule(t)
+    r["properties"]["query"] += "\n// " + "x" * 3000
+
+
+def q_replace(old, new):
+    def mutate(t):
+        r, _ = rule(t)
+        r["properties"]["query"] = r["properties"]["query"].replace(old, new)
+    mutate.__doc__ = "rule(t): replace %r" % old[:40]
+    return mutate
+
+
+def m_domain_regex_no_dot(t):
+    r, _ = rule(t)
+    r["properties"]["query"] = r["properties"]["query"].replace('Phishing Domain:\\s*([^\\s,;]+\\.[^\\s,;]+)', 'Phishing Domain:\\s*([^\\s,;]+)')
+
+
+def samples(t):
+    nested = next(r for r in t["resources"] if r.get("name") == "deploy-alert-backed-rule")
+    return [r for r in nested["properties"]["template"]["resources"]
+            if r["type"].endswith("/automationRules") and "Sample" in r["name"]]
+
+
+def m_sample_unconditional(t):
+    for a in samples(t):
+        a.pop("condition", None)
+
+
+def m_sample_adds_socradar_label(t):
+    samples(t)[1]["properties"]["actions"][0]["actionConfiguration"]["labels"] = [{"labelName": "SOCRadar"}]
+
+
+def m_sample_phishing_severity(t):
+    samples(t)[0]["properties"]["actions"][0]["actionConfiguration"]["severity"] = "Low"
+
+
+def m_sample_phishing_any_rule(t):
+    conds = samples(t)[0]["properties"]["triggeringLogic"]["conditions"][0]["conditionProperties"]
+    conds["propertyValues"] = conds["propertyValues"] + [conds["propertyValues"][0].replace("alertBackedPhishingRuleId", "alertBackedRuleId")]
+
+
+def m_sample_key_changed(t):
+    samples(t)[1]["properties"]["triggeringLogic"]["conditions"][0]["conditionProperties"]["itemConditions"][0]["conditionProperties"]["propertyValues"] = ["AlarmId"]
+
+
+def m_samples_default_on(t):
+    t["parameters"]["DeploySampleAutomationRules"]["defaultValue"] = True
+
+
+def m_default_direct(t):
+    t["parameters"]["IncidentMode"]["defaultValue"] = "Direct"
 
 
 def m_timegenerated_window(t):
     r, _ = rule(t)
-    r["properties"]["query"] = r["properties"]["query"].replace("ingestion_time() > ago(10m)", "TimeGenerated > ago(10m)")
+    r["properties"]["query"] = r["properties"]["query"].replace("ingestion_time() > ago(1d)", "TimeGenerated > ago(1d)")
 
 
 def m_closed_alarms_alert(t):
@@ -65,8 +181,13 @@ def m_take_150(t):
 
 
 def m_group_by_nothing(t):
+    # Grouping moved from the URL entity to the AlarmId custom detail (task_azure_0098:
+    # once IoC URL entities exist, two unrelated alarms could share one and wrongly merge).
+    # Mutate by reverting to the old, now-wrong state.
     r, _ = rule(t)
-    r["properties"]["incidentConfiguration"]["groupingConfiguration"]["groupByEntities"] = []
+    gc = r["properties"]["incidentConfiguration"]["groupingConfiguration"]
+    gc["groupByEntities"] = ["URL"]
+    gc["groupByCustomDetails"] = []
 
 
 def m_reopen_closed(t):
@@ -113,6 +234,56 @@ def m_marker_written_before_ingest(t):
 
 def m_cap_formula_loosened(t):
     workflow(t, "import")["properties"]["parameters"]["AlertBackedMaxNewPerRun"]["value"] = "[div(48, div(10, parameters('PollingIntervalMinutes')))]"
+
+
+AB = "equals(parameters('IncidentMode'), 'AlertBacked')"
+
+
+def m_rules_enabled_always(t):
+    for r in all_rules(t):
+        r["properties"]["enabled"] = True
+
+
+def m_rules_disabled_always(t):
+    for r in all_rules(t):
+        r["properties"]["enabled"] = False
+
+
+def m_credential_ignores_switch(t):
+    for r in all_rules(t):
+        if "Credential" in r["properties"]["query"].split("| where AlarmCategory == ")[1][:14]:
+            r["properties"]["enabled"] = "[%s]" % AB
+
+
+def m_credential_ignores_mode(t):
+    for r in all_rules(t):
+        if "Credential" in r["properties"]["query"].split("| where AlarmCategory == ")[1][:14]:
+            r["properties"]["enabled"] = "[parameters('EnableCredentialRule')]"
+
+
+def m_labeler_always_on(t):
+    _, auto = rule(t)
+    auto["properties"]["triggeringLogic"]["isEnabled"] = True
+
+
+def m_labeler_never_on(t):
+    _, auto = rule(t)
+    auto["properties"]["triggeringLogic"]["isEnabled"] = False
+
+
+def m_rules_only_deployed_in_alert_backed(t):
+    nested = next(r for r in t["resources"] if r.get("name") == "deploy-alert-backed-rule")
+    nested["condition"] = "[%s]" % AB
+
+
+def m_rules_deploy_into_external_workspace(t):
+    nested = next(r for r in t["resources"] if r.get("name") == "deploy-alert-backed-rule")
+    nested["condition"] = "[variables('alarmsTableEnabled')]"
+
+
+def m_sample_ignores_mode(t):
+    for a in samples(t):
+        a["condition"] = "[parameters('DeploySampleAutomationRules')]"
 
 
 def m_rule_deployment_unconditional(t):
@@ -165,7 +336,220 @@ def m_sync_reads_any_url(t):
     find(actions, "Filter_Alarm_Url_Entities")["inputs"]["where"] = "@equals(item()?['kind'], 'Url')"
 
 
+def m_entity_mapping_dropped(t):
+    r, _ = rule(t)
+    r["properties"]["entityMappings"] = r["properties"]["entityMappings"][:-1]
+
+
+def m_ioc_enrichment_hard_fail(t):
+    actions = workflow(t, "import")["properties"]["definition"]["actions"]
+    find(actions, "Parse_AlertBacked_IoC_Arrays")["runAfter"] = {"Run_AlertBacked_IoC_Regex_Query": ["Succeeded"]}
+
+
+def m_ioc_column_wrong_index(t):
+    actions = workflow(t, "import")["properties"]["definition"]["actions"]
+    find(actions, "Ingest_Alarm_Row")["inputs"]["body"][0]["IoCIp1"] = (
+        "@{coalesce(outputs('Parse_AlertBacked_IoC_Arrays')?['ips']?[1], '')}")
+
+
+def m_description_pipe_table(t):
+    r, _ = rule(t)
+    q = r["properties"]["query"]
+    r["properties"]["query"] = q.replace('strcat("Content:\\n\\n", strcat_array(array_slice(ContentRows, 0, 5), "\\n\\n"))',
+                                         'strcat("Content:\\n\\n| Field | Value |\\n|---|---|\\n", strcat_array(ContentRows, "\\n"))')
+
+
+def m_description_link_glued(t):
+    r, _ = rule(t)
+    r["properties"]["query"] = r["properties"]["query"].replace('strcat("\\n\\nView in SOCRadar: "', 'strcat("View in SOCRadar: "')
+
+
+def m_no_alert_dedup(t):
+    r, _ = rule(t)
+    r["properties"]["query"] = r["properties"]["query"].replace("| join kind=leftanti Alerted on $left.AlarmId == $right.AlertedAlarmId\n", "")
+
+
+def m_dedup_flat_custom_details(t):
+    r, _ = rule(t)
+    r["properties"]["query"] = r["properties"]["query"].replace(
+        "tostring(parse_json(tostring(parse_json(tostring(ExtendedProperties))['Custom Details'])).AlarmId[0])",
+        "tostring(parse_json(tostring(ExtendedProperties)).AlarmId)")
+
+
+def m_no_holdback(t):
+    r, _ = rule(t)
+    r["properties"]["query"] = r["properties"]["query"].replace("| where ingestion_time() < ago(12m)\n", "")
+
+
+def m_five_minute_runs(t):
+    r, _ = rule(t)
+    r["properties"]["queryFrequency"] = "PT5M"
+
+
+def m_description_html_escape(t):
+    r, _ = rule(t)
+    q = r["properties"]["query"]
+    r["properties"]["query"] = q.replace('| extend DetailsMarkdown = trim(@"\\s", replace_string(replace_string(substring(AlarmText, 0, 1500), "\\r", ""), "\\n", " "))',
+                                         '| extend DetailsMarkdown = trim(@"\\s", replace_string(replace_string(replace_string(replace_string(substring(AlarmText, 0, 1500), "\\r", ""), "\\n", " "), "<", "&lt;"), "*", "\\\\*"))')
+
+
+def m_dns_from_regex_domain(t):
+    r, _ = rule(t)
+    for mapping in r["properties"]["entityMappings"]:
+        for fm in mapping["fieldMappings"]:
+            if fm["columnName"] == "SuspiciousDomain":
+                fm["columnName"] = "IoCDomain1"
+
+
+def m_content_uncapped(t):
+    r, _ = rule(t)
+    r["properties"]["query"] = r["properties"]["query"].replace("array_slice(ContentRows, 0, 5)", "ContentRows")
+
+
+def m_phishing_domain_not_ingested(t):
+    for res in t["resources"]:
+        if res["type"] == "Microsoft.Insights/dataCollectionRules" and "AlarmsDcrName" in res["name"]:
+            for flow in res["properties"]["dataFlows"]:
+                flow["transformKql"] = flow["transformKql"].replace(", 'phishing_domain', AlarmPayload['content']['phishing_domain']", "")
+
+
+def m_monitored_asset_dropped(t):
+    r, _ = rule(t)
+    r["properties"]["customDetails"].pop("MonitoredAsset", None)
+
+
+def m_domain_from_payload_only(t):
+    r, _ = rule(t)
+    q = r["properties"]["query"]
+    r["properties"]["query"] = q.replace('extract(@"Phishing Domain:\\s*([^\\s,;]+\\.[^\\s,;]+)", 1, AlarmText)', '""')
+
+
+def m_content_domain_from_payload(t):
+    r, _ = rule(t)
+    r["properties"]["query"] = r["properties"]["query"].replace("pack('Suspicious Domain', SuspiciousDomain,", "pack('Suspicious Domain', AlarmPayload['phishing_domain'],")
+
+
+def m_domain_regex_greedy(t):
+    r, _ = rule(t)
+    r["properties"]["query"] = r["properties"]["query"].replace('Phishing Domain:\\s*([^\\s,;]+\\.[^\\s,;]+)', 'Phishing Domain:\\s*(\\S+)')
+
+
+def m_tactics_column_unset(t):
+    r, _ = rule(t)
+    r["properties"]["alertDetailsOverride"].pop("alertTacticsColumnName", None)
+
+
+def m_rule_tactics_emptied(t):
+    r, _ = rule(t)
+    if "AlarmTactics" in r["properties"]["query"]:
+        r["properties"]["tactics"] = []
+
+
+def m_rule_tactic_dropped_for_technique(t):
+    r, _ = rule(t)
+    if "AlarmTactics" in r["properties"]["query"]:
+        r["properties"]["tactics"] = [x for x in r["properties"]["tactics"] if x != "Exfiltration"]
+
+
+def m_tactics_column_not_projected(t):
+    r, _ = rule(t)
+    r["properties"]["query"] = r["properties"]["query"].replace("AlarmCategory, AlarmTactics, AlarmTechniques, MonitoredAsset", "AlarmCategory, AlarmTechniques, MonitoredAsset")
+
+
+def m_tactics_branch_dropped(t):
+    r, _ = rule(t)
+    r["properties"]["query"] = r["properties"]["query"].replace('    AlarmMainType =~ "Surface Web Monitoring", "Reconnaissance,Exfiltration",\n', "")
+
+
+def m_tactics_wrong_for_type(t):
+    r, _ = rule(t)
+    r["properties"]["query"] = r["properties"]["query"].replace('("Botnet", "Deep&Dark Web Monitoring"), "CredentialAccess"', '("Botnet", "Deep&Dark Web Monitoring"), "Discovery"')
+
+
+def m_tactics_column_on_typed_rule(t):
+    r, _ = rule(t)
+    if "AlarmTactics" not in r["properties"]["query"]:
+        r["properties"]["alertDetailsOverride"]["alertTacticsColumnName"] = "AlarmTactics"
+
+
+def m_techniques_property_dropped(t):
+    r, _ = rule(t)
+    r["properties"]["alertDetailsOverride"].pop("alertDynamicProperties", None)
+
+
+def m_techniques_column_renamed(t):
+    r, _ = rule(t)
+    d = r["properties"]["alertDetailsOverride"]
+    if "alertDynamicProperties" in d:
+        d["alertDynamicProperties"][0]["value"] = "AlarmTechnique"
+
+
+def m_technique_wrong_tactic(t):
+    r, _ = rule(t)
+    r["properties"]["query"] = r["properties"]["query"].replace("AlarmMainType =~ \"Botnet\", '[\"T1555\",\"T1056\"]'", "AlarmMainType =~ \"Botnet\", '[\"T1555\",\"T1567\"]'")
+
+
+def m_techniques_not_projected(t):
+    r, _ = rule(t)
+    r["properties"]["query"] = r["properties"]["query"].replace("AlarmTactics, AlarmTechniques, MonitoredAsset", "AlarmTactics, MonitoredAsset")
+
+
+def m_techniques_branch_dropped(t):
+    r, _ = rule(t)
+    r["properties"]["query"] = r["properties"]["query"].replace("    AlarmMainType =~ \"Threat Hunting\", '[\"T1566\",\"T1071\"]',\n", "")
+
+
+def m_techniques_comma_list(t):
+    r, _ = rule(t)
+    r["properties"]["query"] = r["properties"]["query"].replace("'[\"T1566\",\"T1071\"]'", '"T1566,T1071"')
+
+
 MUTATIONS = [
+    ("severity column not projected", (ROOT, IMPORT), q_replace("SentinelSeverity, AlarmCategory", "AlarmCategory")),
+    ("time column not projected", (ROOT, IMPORT), q_replace("| project TimeGenerated, AlarmId", "| project AlarmId")),
+    ("company id not projected", (ROOT, IMPORT), q_replace("AlarmId, CompanyId, Title", "AlarmId, Title")),
+    ("alarm date not projected", (ROOT, IMPORT), q_replace("Status, AlarmDate, AlarmUrl", "Status, AlarmUrl")),
+    ("alarm text not projected", (ROOT, IMPORT), q_replace("Title, AlarmText, AlarmDescription", "Title, AlarmDescription")),
+    ("phishing domain fallback lost", (ROOT, IMPORT), q_replace("coalesce(extract(@\"Phishing Domain:", "strcat(extract(@\"Phishing Domain:")),
+    ("CVE priority swapped", (ROOT, IMPORT), q_replace("CveId = coalesce(tostring(AlarmPayload['cve_id']),", "CveId = strcat(tostring(AlarmPayload['cve_id']),")),
+    ("CVE in the alarm text not read", (ROOT, IMPORT), q_replace("extract(@\"(CVE-[0-9]{4}-[0-9]{4,})\", 1, AlarmText)", "''")),
+    ("affected domain keeps its case", (ROOT, IMPORT), q_replace("AffectedDomain = tolower(", "AffectedDomain = (")),
+    ("device country keeps the blank placeholder", (ROOT, IMPORT), q_replace("DeviceCountry = trim(@\"[\\s\\-]+\", ", "DeviceCountry = (")),
+    ("credential origin default renamed", (ROOT, IMPORT), q_replace('"Historical", "Other")', '"Historical", "Zother")')),
+    ("sample automation rules always deploy", (ROOT, IMPORT), m_sample_unconditional),
+    ("custom-detail sample adds the SOCRadar label", (ROOT, IMPORT), m_sample_adds_socradar_label),
+    ("phishing sample lowers severity", (ROOT, IMPORT), m_sample_phishing_severity),
+    ("phishing sample matches the catch-all too", (ROOT, IMPORT), m_sample_phishing_any_rule),
+    ("custom-detail sample keys on another detail", (ROOT, IMPORT), m_sample_key_changed),
+    ("samples default to on", (ROOT, IMPORT), m_samples_default_on),
+    ("phishing domain regex accepts a word with no dot", (ROOT, IMPORT), m_domain_regex_no_dot),
+    ("CVE regex wants 9 digits", (ROOT, IMPORT), q_replace("CVE-[0-9]{4}-[0-9]{4,}", "CVE-[0-9]{4}-[0-9]{9,}")),
+    ("scanned asset reads only the ip key", (ROOT, IMPORT), q_replace("(?:ip|host)", "(?:ip)")),
+    ("IPv4 regex takes three octets", (ROOT, IMPORT), q_replace("(?:\\.[0-9]{1,3}){3}", "(?:\\.[0-9]{1,3}){2}")),
+    ("CVSS regex drops decimals", (ROOT, IMPORT), q_replace('"value":([0-9.]+)', '"value":([0-9]+)')),
+    ("blank trim keeps the hyphen placeholder", (ROOT, IMPORT), q_replace('@"[\\s\\-]+"', '@"[\\s]+"')),
+    ("machine info needs both machine and IP", (ROOT, IMPORT), q_replace("isnotempty(MachineName) or isnotempty(DeviceIp)", "isnotempty(MachineName) and isnotempty(DeviceIp)")),
+    ("trailing dot is not trimmed from the domain", (ROOT, IMPORT), q_replace('trim_end(@"[.,;]+", ', "(")),
+    ("matched assets dumped as JSON", (ROOT, IMPORT), q_replace('iff(gettype(AlarmPayload[\'matched_asset\']) == "array", strcat_array(AlarmPayload[\'matched_asset\'], ", "), tostring(AlarmPayload[\'matched_asset\']))', "tostring(AlarmPayload['matched_asset'])")),
+    ("PII channel renamed", (ROOT, IMPORT), q_replace('"PII Exposure", "PII"', '"PII Exposure", "Other"')),
+    ("leak link prefers the repository link", (ROOT, IMPORT), q_replace("coalesce(tostring(AlarmPayload['content_link']), tostring(AlarmPayload['source_link']), tostring(AlarmPayload['repository_url']))", "coalesce(tostring(AlarmPayload['repository_url']), tostring(AlarmPayload['content_link']), tostring(AlarmPayload['source_link']))")),
+    ("affected domain wants a 9 letter TLD", (ROOT, IMPORT), q_replace("[A-Za-z]{2,})", "[A-Za-z]{9,})")),
+    ("free text cap is 1200", (ROOT, IMPORT), q_replace(", 0, 120)", ", 0, 1200)")),
+    ("title label column not projected", (ROOT, IMPORT), q_replace("SuspiciousDomain, SuspiciousDomainLabel,", "SuspiciousDomain,")),
+    ("IoC IP column not projected", (ROOT, IMPORT), q_replace("| project TimeGenerated, AlarmId, CompanyId, Title, AlarmText, AlarmDescription,", "| project TimeGenerated, AlarmId, CompanyId, Title, AlarmText,")),
+    ("description column not projected", (ROOT, IMPORT), q_replace("AlarmText, AlarmDescription, AlarmMainType", "AlarmText, AlarmMainType")),
+    ("classifier drifts in one rule", (ROOT, IMPORT), m_classifier_drifts_in_one_rule),
+    ("a pair is dropped from every typed list", (ROOT, IMPORT), m_pair_dropped_everywhere),
+    ("catch-all gets a new rule id", (ROOT, IMPORT), m_catch_all_new_guid),
+    ("automation rule omits one rule id", (ROOT, IMPORT), m_automation_omits_one_rule),
+    ("credential switch is ignored", (ROOT, IMPORT), m_credential_switch_ignored),
+    ("DCR drops a payload key a rule reads", (ROOT,), m_dcr_drops_a_key),
+    ("title placeholder is the entity column", (ROOT, IMPORT), m_title_uses_entity_column),
+    ("credential rule copies the exposed credential", (ROOT, IMPORT), m_credential_copies_secret),
+    ("credential origin keys on the word Machine", (ROOT, IMPORT), m_origin_by_machine_word),
+    ("leak entity may be a SOCRadar link", (ROOT, IMPORT), m_leak_url_any),
+    ("query exceeds the platform limit", (ROOT, IMPORT), m_query_too_long),
+    ("IncidentMode defaults to Direct again", (ROOT, IMPORT), m_default_direct),
     ("rule windows on TimeGenerated", (ROOT, IMPORT), m_timegenerated_window),
     ("closed alarms become incidents", (ROOT, IMPORT), m_closed_alarms_alert),
     ("rule takes 150 rows", (ROOT, IMPORT), m_take_150),
@@ -179,7 +563,16 @@ MUTATIONS = [
     ("Direct loop runs in AlertBacked", (ROOT, IMPORT), m_direct_loop_ungated),
     ("marker written before ingest", (ROOT, IMPORT), m_marker_written_before_ingest),
     ("cap formula loosened", (ROOT, IMPORT), m_cap_formula_loosened),
-    ("rule deployed in Direct mode", (ROOT, IMPORT), m_rule_deployment_unconditional),
+    ("rule deployment condition dropped", (ROOT, IMPORT), m_rule_deployment_unconditional),
+    ("rules stay enabled in Direct mode", (ROOT, IMPORT), m_rules_enabled_always),
+    ("rules are never enabled", (ROOT, IMPORT), m_rules_disabled_always),
+    ("credential rule ignores its switch", (ROOT, IMPORT), m_credential_ignores_switch),
+    ("credential rule ignores the mode", (ROOT, IMPORT), m_credential_ignores_mode),
+    ("labeling automation rule always on", (ROOT, IMPORT), m_labeler_always_on),
+    ("labeling automation rule never on", (ROOT, IMPORT), m_labeler_never_on),
+    ("rules deployed only in AlertBacked (switch back leaves them on)", (ROOT, IMPORT), m_rules_only_deployed_in_alert_backed),
+    ("rules deployed into an external workspace", (ROOT, IMPORT), m_rules_deploy_into_external_workspace),
+    ("sample automation rules ignore the mode", (ROOT, IMPORT), m_sample_ignores_mode),
     ("Sync sends unresolved id", (ROOT, SYNC), m_sync_reads_unresolved_id),
     ("Sync skips the resolver", (ROOT, SYNC), m_sync_skips_resolver),
     ("Sync reads any URL entity", (ROOT, SYNC), m_sync_reads_any_url),
@@ -188,35 +581,88 @@ MUTATIONS = [
     ("rank reads labels only", (ROOT, SYNC), m_rank_reads_labels_only),
     ("description reader maps CRITICAL wrong", (ROOT, SYNC), m_description_skips_critical),
     ("resolver prefers description", (ROOT, SYNC), m_resolve_prefers_description),
+    ("entity mapping dropped", (ROOT, IMPORT), m_entity_mapping_dropped),
+    ("IoC enrichment hard-fails ingest", (ROOT, IMPORT), m_ioc_enrichment_hard_fail),
+    ("description goes back to a pipe table", (ROOT, IMPORT), m_description_pipe_table),
+    ("link glued to severity line", (ROOT, IMPORT), m_description_link_glued),
+    ("rule alerts an alarm twice", (ROOT, IMPORT), m_no_alert_dedup),
+    ("rows are not held back before alerting", (ROOT, IMPORT), m_no_holdback),
+    ("description escapes markdown again", (ROOT, IMPORT), m_description_html_escape),
+    ("DNS entity is the regex-found domain again", (ROOT, IMPORT), m_dns_from_regex_domain),
+    ("Content block lists every field", (ROOT, IMPORT), m_content_uncapped),
+    ("Content domain read from the payload key", (ROOT, IMPORT), m_content_domain_from_payload),
+    ("domain no longer read from the alarm text", (ROOT, IMPORT), m_domain_from_payload_only),
+    ("phishing domain regex takes a comma list whole", (ROOT, IMPORT), m_domain_regex_greedy),
+    ("phishing domain not ingested", (ROOT,), m_phishing_domain_not_ingested),
+    ("monitored asset dropped from custom details", (ROOT, IMPORT), m_monitored_asset_dropped),
+    ("rule runs every 5 minutes again", (ROOT, IMPORT), m_five_minute_runs),
+    ("alerted-AlarmId read uses the flat shape", (ROOT, IMPORT), m_dedup_flat_custom_details),
+    ("IoC column reads wrong index", (ROOT, IMPORT), m_ioc_column_wrong_index),
+    ("catch-all tactics column no longer passed to the alert", (ROOT, IMPORT), m_tactics_column_unset),
+    ("catch-all fallback tactics emptied", (ROOT, IMPORT), m_rule_tactics_emptied),
+    ("catch-all keeps a technique without its tactic", (ROOT, IMPORT), m_rule_tactic_dropped_for_technique),
+    ("AlarmTactics not projected", (ROOT, IMPORT), m_tactics_column_not_projected),
+    ("a main type loses its tactics branch", (ROOT, IMPORT), m_tactics_branch_dropped),
+    ("a main type gets the wrong tactic", (ROOT, IMPORT), m_tactics_wrong_for_type),
+    ("typed rule starts reading the tactics column", (ROOT, IMPORT), m_tactics_column_on_typed_rule),
+    ("catch-all no longer maps AlarmTechniques to the alert", (ROOT, IMPORT), m_techniques_property_dropped),
+    ("technique mapping points at a misspelt column", (ROOT, IMPORT), m_techniques_column_renamed),
+    ("a main type gets a technique of another tactic", (ROOT, IMPORT), m_technique_wrong_tactic),
+    ("AlarmTechniques not projected", (ROOT, IMPORT), m_techniques_not_projected),
+    ("techniques written as a comma list again (alert Techniques stays empty)", (ROOT, IMPORT), m_techniques_comma_list),
+    ("a main type loses its techniques branch", (ROOT, IMPORT), m_techniques_branch_dropped),
 ]
 
 
 def main():
+    import inspect
     blind = []
+    total = 0
     for name, paths, mutate in MUTATIONS:
-        originals = {p: open(p, encoding="utf-8").read() for p in paths}
-        try:
-            for p in paths:
-                template = json.loads(originals[p])
-                mutate(template)
-                with open(p, "w", encoding="utf-8") as handle:
-                    handle.write(json.dumps(template, indent=4, ensure_ascii=False))
+        scoped = "rule(t)" in inspect.getsource(mutate)
+        bit = 0
+        for index in (range(len(CATS)) if scoped else [0]):
+            TARGET[0] = index
+            label = "%s [%s]" % (name, CATS[index]) if scoped else name
+            originals = {p: open(p, encoding="utf-8").read() for p in paths}
             try:
-                result = subprocess.run([sys.executable, TEST], cwd=REPO, capture_output=True, text=True,
-                                        timeout=60, env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
-                rc = result.returncode
-            except subprocess.TimeoutExpired:
-                rc = 124
-        finally:
-            for p, text in originals.items():
-                with open(p, "w", encoding="utf-8") as handle:
-                    handle.write(text)
-        if rc == 0:
-            print("BLIND  %-34s test still passed" % name)
-            blind.append(name)
-        else:
-            print("caught %-34s" % name)
-    print("\nblind: %d of %d" % (len(blind), len(MUTATIONS)))
+                changed = False
+                for p in paths:
+                    template = json.loads(originals[p])
+                    before = json.dumps(template, sort_keys=True)
+                    mutate(template)
+                    changed = changed or json.dumps(template, sort_keys=True) != before
+                    with open(p, "w", encoding="utf-8") as handle:
+                        handle.write(json.dumps(template, indent=4, ensure_ascii=False))
+                if not changed:
+                    continue  # the mutation has nothing to bite on in this rule
+                total += 1
+                bit += 1
+                failed = False
+                try:
+                    result = subprocess.run([sys.executable, TEST], cwd=REPO, capture_output=True, text=True,
+                                            timeout=60, env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
+                    rc = result.returncode
+                    # Only the test's own failure banner counts as caught: a traceback or a timeout also exits non-zero.
+                    failed = rc == 1 and "ALERT-BACKED MODE CHECK FAILED" in result.stdout
+                except subprocess.TimeoutExpired:
+                    rc = 124
+            finally:
+                for p, text in originals.items():
+                    with open(p, "w", encoding="utf-8") as handle:
+                        handle.write(text)
+            if rc == 0:
+                print("BLIND  %-52s test still passed" % label)
+                blind.append(label)
+            elif not failed:
+                print("CRASH  %-52s the test died (rc %d) without its failure banner" % (label, rc))
+                blind.append(label + " (crash)")
+            else:
+                print("caught %-52s" % label)
+        if bit == 0:
+            print("STALE  %-52s the mutation changes nothing: its target text is gone" % name)
+            blind.append(name + " (stale)")
+    print("\nblind: %d of %d" % (len(blind), total))
     return 1 if blind else 0
 
 
